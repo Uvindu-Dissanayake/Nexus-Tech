@@ -1,0 +1,143 @@
+import tkinter as tk
+from tkinter import ttk
+import math
+
+
+class ReportPage(ttk.Frame):
+    def __init__(self, parent, controller=None):
+        super().__init__(parent)
+
+        tk.Label(self, text="Sales Reports Dashboard", font=("Arial", 20, "bold")).pack(pady=10)
+
+        # Button frame
+        btn_frame = tk.Frame(self)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text="Line Chart", command=self.show_line).grid(row=0, column=0, padx=10)
+        ttk.Button(btn_frame, text="Bar Chart", command=self.show_bar).grid(row=0, column=1, padx=10)
+        ttk.Button(btn_frame, text="Pie Chart", command=self.show_pie).grid(row=0, column=2, padx=10)
+
+        # Canvas for drawing all charts
+        self.canvas = tk.Canvas(self, width=700, height=420, bg="white",
+                                highlightthickness=1, highlightbackground="black")
+        self.canvas.pack(pady=20)
+
+        # Example Data
+        self.months = ["Jan", "Feb", "Mar", "Apr", "May"]
+        self.values = [10, 25, 18, 30, 22]
+
+        # Default display = line chart
+        self.show_line()
+
+    # ----------------------------------------------------------
+    # LINE CHART
+    # ----------------------------------------------------------
+    def show_line(self):
+        self.canvas.delete("all")
+
+        months = self.months
+        values = self.values
+        max_val = max(values)
+
+        # Grid
+        for y in range(50, 351, 50):
+            self.canvas.create_line(50, y, 650, y, fill="#e0e0e0")
+
+        # Axes
+        self.canvas.create_line(50, 350, 650, 350, width=2)
+        self.canvas.create_line(50, 350, 50, 50, width=2)
+
+        # Line segments
+        for i in range(len(values)-1):
+            x1 = 100 + i * 100
+            y1 = 350 - (values[i] / max_val) * 250
+
+            x2 = 100 + (i + 1) * 100
+            y2 = 350 - (values[i+1] / max_val) * 250
+
+            self.canvas.create_line(x1, y1, x2, y2, fill="blue", width=3)
+            self.canvas.create_oval(x1-5, y1-5, x1+5, y1+5, fill="blue")
+
+        # Last point
+        lx = 100 + (len(values)-1) * 100
+        ly = 350 - (values[-1] / max_val) * 250
+        self.canvas.create_oval(lx-5, ly-5, lx+5, ly+5, fill="blue")
+
+        # Month labels
+        for i, month in enumerate(months):
+            x = 100 + i * 100
+            self.canvas.create_text(x, 365, text=month, font=("Arial", 10))
+
+        self.canvas.create_text(350, 20, text="Sales Line Chart", font=("Arial", 14, "bold"))
+
+    # ----------------------------------------------------------
+    # BAR CHART
+    # ----------------------------------------------------------
+    def show_bar(self):
+        self.canvas.delete("all")
+
+        months = self.months
+        values = self.values
+        max_val = max(values)
+
+        bar_width = 60
+        gap = 40
+        start_x = 100
+
+        # Y-axis
+        self.canvas.create_line(80, 50, 80, 350, width=2)
+        # X-axis
+        self.canvas.create_line(80, 350, 650, 350, width=2)
+
+        # Bars
+        for i, val in enumerate(values):
+            x1 = start_x + i * (bar_width + gap)
+            y1 = 350 - (val / max_val) * 250
+            x2 = x1 + bar_width
+            y2 = 350
+
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill="skyblue", outline="black")
+            self.canvas.create_text(x1 + bar_width/2, y1 - 10, text=str(val), font=("Arial", 10))
+            self.canvas.create_text(x1 + bar_width/2, 365, text=months[i], font=("Arial", 10))
+
+        self.canvas.create_text(350, 20, text="Sales Bar Chart", font=("Arial", 14, "bold"))
+
+    # ----------------------------------------------------------
+    # PIE CHART
+    # ----------------------------------------------------------
+    def show_pie(self):
+        self.canvas.delete("all")
+
+        months = self.months
+        values = self.values
+        total = sum(values)
+
+        start_angle = 0
+        colors = ["red", "green", "blue", "orange", "purple"]
+
+        for i, val in enumerate(values):
+            extent = (val / total) * 360
+
+            self.canvas.create_arc(150, 50, 550, 450,
+                                   start=start_angle,
+                                   extent=extent,
+                                   fill=colors[i])
+
+            # Label position
+            mid = math.radians(start_angle + extent / 2)
+            lx = 350 + 150 * math.cos(mid)
+            ly = 250 + 150 * math.sin(mid)
+
+            self.canvas.create_text(lx, ly, text=f"{months[i]} ({val})")
+
+            start_angle += extent
+
+        self.canvas.create_text(350, 20, text="Sales Pie Chart", font=("Arial", 14, "bold"))
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("Reports")
+    ReportPage(root).pack()
+    root.mainloop()
+
