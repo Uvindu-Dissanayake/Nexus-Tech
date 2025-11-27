@@ -4,6 +4,7 @@ import sqlite3
 
 DB_FILE = "shop.db"
 
+
 # ---------- 初始化数据库，只包含 products 表 ----------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -19,6 +20,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
 
 # ---------- 主应用 ----------
 class ProductApp(tk.Tk):
@@ -40,13 +42,14 @@ class ProductApp(tk.Tk):
         self.conn.close()
         self.destroy()
 
+
 # ---------- 产品管理页面 ----------
 class ProductPage(ttk.Frame):
     """
     简单版产品管理界面：
     - 显示所有产品（id, category, name, price, stock）
     - 可以新增、更新、删除产品
-    - 库存少于 10 会在底部红色提示
+    - 库存少于 10 会在顶部右侧红色提示
     """
     def __init__(self, parent, conn):
         super().__init__(parent)
@@ -55,10 +58,21 @@ class ProductPage(ttk.Frame):
         ttk.Label(self, text="Product Management",
                   font=("Helvetica", 16, "bold")).pack(pady=10)
 
-        # 顶部按钮
+        # 顶部区域：左边 Refresh 按钮，右边低库存提示
         top = ttk.Frame(self)
         top.pack(fill="x", padx=10, pady=5)
-        ttk.Button(top, text="Refresh", command=self.load_products).pack(side="left", padx=5)
+
+        ttk.Button(top, text="Refresh", command=self.load_products).pack(
+            side="left", padx=5
+        )
+
+        # 低库存提示 Label 放在顶部右侧
+        self.low_stock_label = ttk.Label(
+            top,
+            text="All stock levels are OK.",
+            foreground="red"
+        )
+        self.low_stock_label.pack(side="right", padx=5)
 
         # 中间表格
         columns = ("id", "category", "name", "price", "stock")
@@ -102,10 +116,6 @@ class ProductPage(ttk.Frame):
         ttk.Button(btn_frame, text="Delete Selected",
                    command=self.delete_product).pack(side="left", padx=5)
 
-        # 低库存提示
-        self.low_stock_label = ttk.Label(self, text="", foreground="red")
-        self.low_stock_label.pack(pady=5)
-
         # 初始化加载一次
         self.load_products()
 
@@ -132,9 +142,13 @@ class ProductPage(ttk.Frame):
         for r in rows:
             self.tree.insert(
                 "", "end",
-                values=(r["id"], r["category"], r["name"],
-                        f"{r['price']:.2f}" if r["price"] is not None else "",
-                        r["stock"])
+                values=(
+                    r["id"],
+                    r["category"],
+                    r["name"],
+                    f"{r['price']:.2f}" if r["price"] is not None else "",
+                    r["stock"]
+                )
             )
 
         self.check_low_stock()
@@ -151,7 +165,7 @@ class ProductPage(ttk.Frame):
             return
 
         msg_lines = [f"{r['name']} (stock: {r['stock']})" for r in rows]
-        msg = "⚠ Low stock (<10):\n" + "\n".join(msg_lines)
+        msg = "⚠ Low stock (<10): " + ";  ".join(msg_lines)
         self.low_stock_label.config(text=msg)
 
     # --------- 选中行 -> 填充输入框 ----------
