@@ -225,49 +225,165 @@ class CustomerAccountPage(ttk.Frame):
 class ShoppingPage(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
-        ttk.Label(self, text="Shopping Page", font=('Helvetica',16,'bold')).pack(pady=10)
-        self.cart = []
-        self.total_var = tk.DoubleVar(value=0)
+        self.controller = controller
+        ttk.Label(self, text='Shopping Page', font=('Helvetica', 16)).pack(pady=8)
+        top = ttk.Frame(self)
+        top.pack(fill='x')
+        ttk.Button(top, text='Back', command=lambda: controller.show_frame('StartPage')).pack(side='left')
+        ttk.Button(top, text='View Cart', command=self.view_cart).pack(side='right')
 
-        # Product list
-        self.tree = ttk.Treeview(self, columns=('category','name','price'), show='headings')
-        for col in ('category','name','price'):
-            self.tree.heading(col, text=col.capitalize())
-        self.tree.pack(fill='both', expand=True)
+        mid = ttk.Frame(self)
+        mid.pack(fill='both', expand=True)
 
-        ttk.Button(self, text="Add to Cart", command=self.add_to_cart).pack(pady=5)
-        ttk.Label(self, text="Total: $").pack(side='left', padx=(250,5))
-        ttk.Label(self, textvariable=self.total_var).pack(side='left')
-        ttk.Button(self, text="Checkout", command=lambda: self.checkout(controller)).pack(pady=5)
-        ttk.Button(self, text="Back", command=lambda: controller.show_frame("CustomerAccountPage")).pack()
+        self.cat_list = tk.Listbox(mid, height=20)
+        self.cat_list.pack(side='left', fill='y')
+        for c in CATEGORIES:
+            self.cat_list.insert('end', c)
+        self.cat_list.bind('<<ListboxSelect>>', self.show_products)
 
-    def refresh(self, controller):
+        self.tree = ttk.Treeview(mid, columns=('id', 'name', 'price', 'stock'), show='headings')
+        for col in ('id', 'name', 'price', 'stock'):
+            self.tree.heading(col, text=col.title())
+            self.tree.column(col, anchor='center')
+        self.tree.pack(side='left', fill='both', expand=True)
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill='x', pady=6)
+        ttk.Button(bottom, text='Add to Cart', command=self.add_to_cart).pack(side='left', padx=4)
+        ttk.Button(bottom, text='Checkout', command=self.checkout).pack(side='left', padx=4)
+        self.total_label = ttk.Label(bottom, text='Total: $0.00')
+        self.total_label.pack(side='right')
+
+    # refresh may be called with controller param from show_frame
+    def refresh(self, controller=None):
+        self.show_products()
+        self.update_total()
+
+    def show_products(self, event=None):
+        sel = self.cat_list.curselection()
+        if sel:
+            cat = self.cat_list.get(sel[0])
+            rows = self.controller.query('SELECT id,name,price,stock FROM products WHERE category=?', (cat,), fetch=True)
+        else:
+            rows = self.controller.query('SELECT id,name,price,stock FROM products', fetch=True)
+        rows = rows or []
         for i in self.tree.get_children():
             self.tree.delete(i)
-        products = controller.query("SELECT category,name,price FROM products", fetch=True)
-        for p in products:
-            self.tree.insert('', 'end', values=p)
+        for r in rows:
+            self.tree.insert('', 'end', values=r)
 
     def add_to_cart(self):
         sel = self.tree.selection()
-        if sel:
-            item = self.tree.item(sel[0], 'values')
-            self.cart.append(item)
-            self.total_var.set(self.total_var.get() + float(item[2]))
-
-    def checkout(self, controller):
-        if not self.cart:
-            messagebox.showwarning("Empty", "Your cart is empty.")
+        if not sel:
+            messagebox.showwarning('Select', 'Select an item')
             return
-        if messagebox.askyesno("Payment", "Send payment request to your registered card?"):
-            total = self.total_var.get()
-            uid = controller.current_user[0]
-            controller.query("INSERT INTO orders (user_id, total, timestamp) VALUES (?, ?, ?)",
-                             (uid, total, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            controller.query("UPDATE users SET loyalty_points = loyalty_points + 10 WHERE id=?", (uid,))
-            messagebox.showinfo("Success", f"Payment of ${total:.2f} processed!")
-            self.cart.clear()
-            self.total_var.set(0)
+        vals = self.tree.item(sel[0])['values']
+        pid, name, price, stock = vals[0], vals[1], vals[2], vals[3]
+        qty = simpledialog.askinteger('Quantity', 'Enter quantity', minvalue=1, initialvalue=1)
+        if qty:
+            if stock is not None and qty > stock:
+                messagebox.showwarning('Stock', f'Only {stock} items available.')
+                return
+            # try to merge with existing cart entry
+            for idx, (existing_pid, existing_qty) in enumerate(self.controller.cart):
+                if existing_pid == pid:
+                    self.controller.cart[idx] = (existing_pid, existing_qty + qty)
+                    break
+            else:
+                self.controller.cart.append((pid, qty))
+            self.update_total()
+
+    def update_total(self):
+        total = 0.0
+        for pid, qty in self.controller.cart:
+            row = self.controller.query('SELECT price FROM products WHERE id=?', (pid,), fetch=True)
+            if not row:
+                continue
+            price = row[0][0]
+            total += price * qty
+        self.total_label.config(text=f'Total: ${total:.2f}')
+
+    def view_cart(self):
+        if not self.controller.cart:
+            messagebox.showinfo('Cart', 'Cart is empty')
+            return
+        top = tk.Toplevel(self)
+        top.title('Cart Details')
+        tree = ttk.Treeview(top, columns=('name', 'qty', 'price', 'subtotal'), show='headings')
+        for c in ('name', 'qty', 'price', 'subtotal'):
+            tree.heading(c, text=c.title())
+            tree.column(c, anchor='center')
+        tree.pack(fill='both', expand=True)
+        total = 0
+        for pid, qty in self.controller.cart:
+            row = self.controller.query('SELECT name,price FROM products WHERE id=?', (pid,), fetch=True)
+            if not row:
+                continue
+            n, p = row[0]
+            sub = p * qty
+            total += sub
+            tree.insert('', 'end', values=(n, qty, f'{p:.2f}', f'{sub:.2f}'))
+        ttk.Label(top, text=f'Total: ${total:.2f}').pack(pady=6)
+
+    def checkout(self):
+        if not self.controller.cart:
+            messagebox.showinfo('Empty', 'Cart is empty')
+            return
+
+        # compute total and check stock availability
+        total = 0.0
+        for pid, qty in self.controller.cart:
+            row = self.controller.query('SELECT price, stock FROM products WHERE id=?', (pid,), fetch=True)
+            if not row:
+                messagebox.showerror('Error', f'Product id {pid} not found.')
+                return
+            price, stock = row[0]
+            if stock is not None and qty > stock:
+                messagebox.showwarning('Stock', f'Not enough stock for product id {pid}. Available: {stock}')
+                return
+            total += price * qty
+
+        u = self.controller.current_user
+        if not u or (u and u[3] != 'customer'):
+            messagebox.showinfo('Guest', 'You must be logged in as a customer to pay with card.')
+            return
+
+        card_number = u[4]
+        if not card_number:
+            messagebox.showwarning('No Card', 'Add a card in your account first.')
+            return
+
+        confirm = messagebox.askyesno('Payment', f'Charge ${total:.2f} to card ending {str(card_number)[-4:]}?')
+        if not confirm:
+            return
+
+        # perform DB insert for order and order_products and decrement stock
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        c = conn.cursor()
+        try:
+            c.execute('INSERT INTO orders (user_id, total) VALUES (?, ?)', (u[0], total))
+            order_id = c.lastrowid
+            for pid, qty in self.controller.cart:
+                c.execute('INSERT INTO order_products (order_id, product_id, quantity) VALUES (?, ?, ?)', (order_id, pid, qty))
+                # decrement stock
+                c.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (qty, pid))
+            # award loyalty points (1 point per $10)
+            points = int(total // 10)
+            c.execute('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id=?', (points, u[0]))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            messagebox.showerror('Error', f'Failed to place order: {e}')
+            conn.close()
+            return
+        conn.close()
+
+        messagebox.showinfo('Payment', 'Payment successful (simulated).')
+        self.controller.cart.clear()
+        self.update_total()
+        messagebox.showinfo('Done', f'Order completed, earned {points} loyalty points.')
+
 
 # ---------------- STAFF PAGE ----------------
 class StaffPage(ttk.Frame):
