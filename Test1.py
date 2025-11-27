@@ -5,20 +5,15 @@ from datetime import datetime
 import csv
 import os
 import matplotlib.pyplot as plt
+from functools import partial
 
-# --- Config ---
+DB_NAME = 'shop_system.db'
 DB_FILE = 'shop_app.db'
-
-CATEGORIES = [
-    'Computers', 'Phones', 'Accessories', 'Gaming', 'Networking',
-    'Peripherals', 'Storage', 'Audio', 'Smart Home', 'Cables'
-]
 
 # ====================== DATABASE SETUP ==========================
 def init_db():
     new_db = not os.path.exists(DB_FILE)
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA foreign_keys = ON;")
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
 
     # Users Table
@@ -33,13 +28,12 @@ def init_db():
         loyalty_points INTEGER DEFAULT 0
     )''')
 
-    # Products Table (include stock)
+    # Products Table
     c.execute('''CREATE TABLE IF NOT EXISTS products(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         category TEXT,
-        price REAL,
-        stock INTEGER DEFAULT 0
+        price REAL
     )''')
 
     # Orders Table
@@ -47,8 +41,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         total REAL,
-        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP
     )''')
 
     # Order Products Table
@@ -56,36 +49,44 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_id INTEGER,
         product_id INTEGER,
-        quantity INTEGER,
-        FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE,
-        FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL
+        quantity INTEGER
     )''')
 
     conn.commit()
 
+    
     if new_db:
-        # Default system users (username, password, role, loyalty_points)
+        # Default system users
         default_users = [
             ('admin', 'admin', 'admin', 0),
-            ('Admin', 'admin123', 'admin', 0),
+            ('Admin', 'admin123', 'admin', 0),  # Requested new admin account
             ('staff', 'staff', 'staff', 0)
         ]
         for u, p, r, l in default_users:
             try:
-                c.execute("INSERT INTO users (username,password,role,loyalty_points) VALUES (?,?,?,?)", (u, p, r, l))
+                c.execute("INSERT INTO users (username,password,role,loyalty_points) VALUES (?,?,?,?)", (u,p,r,l))
             except sqlite3.IntegrityError:
                 pass
 
-        # Seed demo products
-        for i, cat in enumerate(CATEGORIES):
+        # Insert demo products
+        for i,cat in enumerate(CATEGORIES):
             for j in range(10):
                 name = f"{cat} - Product {j+1}"
-                price = round(5 + (i * 2) + j * 1.5, 2)
+                price = round(5 + (i*2) + j*1.5, 2)
                 stock = 10 + j
-                c.execute('INSERT INTO products (category,name,price,stock) VALUES (?,?,?,?)', (cat, name, price, stock))
-
+                c.execute('INSERT INTO products (category,name,price,stock) VALUES (?,?,?,?)', (cat,name,price,stock))
         conn.commit()
 
+    return conn
+
+    # Seed products if not exists
+    c.execute('SELECT COUNT(*) FROM products')
+    if c.fetchone()[0] == 0:
+        for cat in range(1, 11):
+            for p in range(1, 11):
+                c.execute('INSERT INTO products (name, category, price) VALUES (?, ?, ?)',
+                          (f'Product {p}', f'Category {cat}', round(10 + p * 1.5, 2)))
+    conn.commit()
     conn.close()
 
 
@@ -97,8 +98,7 @@ class ShopApp(tk.Tk):
         self.geometry("1000x700")
 
         init_db()
-        self.current_user = None           # will hold tuple returned from DB
-        self.cart = []                      # list of (product_id, qty)
+        self.current_user = None
 
         container = ttk.Frame(self)
         container.pack(fill='both', expand=True)
@@ -116,17 +116,11 @@ class ShopApp(tk.Tk):
     def show_frame(self, page_name):
         frame = self.frames[page_name]
         frame.tkraise()
-        # The controller passes itself to refresh methods that expect it.
         if hasattr(frame, "refresh"):
-            try:
-                frame.refresh(self)
-            except TypeError:
-                # Some refresh methods accept no args
-                frame.refresh()
+            frame.refresh(self)
 
     def query(self, query, params=(), fetch=False):
-        conn = sqlite3.connect(DB_FILE)
-        conn.execute("PRAGMA foreign_keys = ON;")
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute(query, params)
         result = c.fetchall() if fetch else None
@@ -173,21 +167,20 @@ class CustomerRegisterPage(ttk.Frame):
 
         for label, var in fields:
             ttk.Label(self, text=label).pack()
-            show = "*" if 'Password' in label or 'CVV' in label else None
-            ttk.Entry(self, textvariable=var, show=show).pack()
+            ttk.Entry(self, textvariable=var, show="*" if 'Password' in label or 'CVV' in label else None).pack()
 
         ttk.Button(self, text="Register", command=lambda: self.register(controller)).pack(pady=10)
         ttk.Button(self, text="Back", command=lambda: controller.show_frame("StartPage")).pack()
 
     def register(self, controller):
-        u, p = self.username.get().strip(), self.password.get().strip()
-        cn, ce, cvv = self.card_number.get().strip(), self.card_expiry.get().strip(), self.card_cvv.get().strip()
-        if not (u and p):
-            messagebox.showerror("Error", "Username and password required.")
+        u, p = self.username.get(), self.password.get()
+        cn, ce, cvv = self.card_number.get(), self.card_expiry.get(), self.card_cvv.get()
+        if not (u and p and cn and ce and cvv):
+            messagebox.showerror("Error", "All fields required.")
             return
         try:
             controller.query('INSERT INTO users (username, password, role, card_number, card_expiry, card_cvv) VALUES (?, ?, ?, ?, ?, ?)',
-                             (u, p, 'customer', cn or None, ce or None, cvv or None))
+                             (u, p, 'customer', cn, ce, cvv))
             messagebox.showinfo("Success", "Registration successful!")
             controller.show_frame("CustomerLoginPage")
         except sqlite3.IntegrityError:
@@ -212,10 +205,10 @@ class CustomerLoginPage(ttk.Frame):
         ttk.Button(self, text="Back", command=lambda: controller.show_frame("StartPage")).pack()
 
     def login(self, controller):
-        u, p = self.username.get().strip(), self.password.get().strip()
+        u, p = self.username.get(), self.password.get()
         user = controller.query('SELECT * FROM users WHERE username=? AND password=? AND role=?', (u, p, 'customer'), fetch=True)
         if user:
-            controller.current_user = user[0]   # tuple from DB
+            controller.current_user = user[0]
             controller.show_frame("CustomerAccountPage")
         else:
             messagebox.showerror("Login Failed", "Invalid username or password.")
@@ -239,17 +232,11 @@ class StaffLoginPage(ttk.Frame):
         ttk.Button(self, text="Back", command=lambda: controller.show_frame("StartPage")).pack()
 
     def login(self, controller):
-        u, p = self.username.get().strip(), self.password.get().strip()
-        # Simple hardcoded admin fallback OR DB check for staff/admin role
-        if (u == "Admin" and p == "admin123"):
+        u, p = self.username.get(), self.password.get()
+        if u == "Admin" and p == "admin123":
             controller.show_frame("AdminReportsPage")
-            return
-        user = controller.query('SELECT * FROM users WHERE username=? AND password=? AND (role=? OR role=?)', (u, p, 'staff', 'admin'), fetch=True)
-        if user:
-            controller.current_user = user[0]
-            controller.show_frame("StaffPage")
         else:
-            messagebox.showerror("Access Denied", "Invalid staff credentials.")
+            messagebox.showerror("Access Denied", "Invalid admin credentials.")
 
 
 # ====================== CUSTOMER ACCOUNT PAGE ==========================
@@ -265,11 +252,8 @@ class CustomerAccountPage(ttk.Frame):
     def refresh(self, controller):
         if controller.current_user:
             user_id = controller.current_user[0]
-            points_row = controller.query('SELECT loyalty_points FROM users WHERE id=?', (user_id,), fetch=True)
-            points = points_row[0][0] if points_row else 0
+            points = controller.query('SELECT loyalty_points FROM users WHERE id=?', (user_id,), fetch=True)[0][0]
             self.points_label.config(text=f"Loyalty Points: {points}")
-        else:
-            self.points_label.config(text="Not logged in")
 
 
 # ====================== SHOPPING PAGE ==========================
@@ -277,7 +261,7 @@ class ShoppingPage(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        ttk.Label(self, text='Shopping Page', font=('Helvetica', 16)).pack(pady=8)
+        ttk.Label(self, text='Shopping Page', font=('Helvetica',16)).pack(pady=8)
         top = ttk.Frame(self)
         top.pack(fill='x')
         ttk.Button(top, text='Back', command=lambda: controller.show_frame('StartPage')).pack(side='left')
@@ -292,21 +276,21 @@ class ShoppingPage(ttk.Frame):
             self.cat_list.insert('end', c)
         self.cat_list.bind('<<ListboxSelect>>', self.show_products)
 
-        self.tree = ttk.Treeview(mid, columns=('id', 'name', 'price', 'stock'), show='headings')
-        for col in ('id', 'name', 'price', 'stock'):
+        self.tree = ttk.Treeview(mid, columns=('id','name','price','stock'), show='headings')
+        for col in ('id','name','price','stock'):
             self.tree.heading(col, text=col.title())
-            self.tree.column(col, anchor='center')
         self.tree.pack(side='left', fill='both', expand=True)
 
         bottom = ttk.Frame(self)
-        bottom.pack(fill='x', pady=6)
+        bottom.pack(fill='x')
         ttk.Button(bottom, text='Add to Cart', command=self.add_to_cart).pack(side='left', padx=4)
         ttk.Button(bottom, text='Checkout', command=self.checkout).pack(side='left', padx=4)
         self.total_label = ttk.Label(bottom, text='Total: $0.00')
         self.total_label.pack(side='right')
 
-    # refresh may be called with controller param from show_frame
-    def refresh(self, controller=None):
+        self.bind('<<ShowFrame>>', lambda e: self.refresh())
+
+    def refresh(self):
         self.show_products()
         self.update_total()
 
@@ -314,126 +298,72 @@ class ShoppingPage(ttk.Frame):
         sel = self.cat_list.curselection()
         if sel:
             cat = self.cat_list.get(sel[0])
-            rows = self.controller.query('SELECT id,name,price,stock FROM products WHERE category=?', (cat,), fetch=True)
+            rows = self.controller.query('SELECT id,name,price,stock FROM products WHERE category=?',(cat,),fetch=True)
         else:
-            rows = self.controller.query('SELECT id,name,price,stock FROM products', fetch=True)
-        rows = rows or []
-        for i in self.tree.get_children():
-            self.tree.delete(i)
+            rows = self.controller.query('SELECT id,name,price,stock FROM products',fetch=True)
+        for i in self.tree.get_children(): self.tree.delete(i)
         for r in rows:
             self.tree.insert('', 'end', values=r)
 
     def add_to_cart(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showwarning('Select', 'Select an item')
+            messagebox.showwarning('Select','Select an item')
             return
         vals = self.tree.item(sel[0])['values']
-        pid, name, price, stock = vals[0], vals[1], vals[2], vals[3]
-        qty = simpledialog.askinteger('Quantity', 'Enter quantity', minvalue=1, initialvalue=1)
+        qty = simpledialog.askinteger('Quantity','Enter quantity',minvalue=1,initialvalue=1)
         if qty:
-            if stock is not None and qty > stock:
-                messagebox.showwarning('Stock', f'Only {stock} items available.')
-                return
-            # try to merge with existing cart entry
-            for idx, (existing_pid, existing_qty) in enumerate(self.controller.cart):
-                if existing_pid == pid:
-                    self.controller.cart[idx] = (existing_pid, existing_qty + qty)
-                    break
-            else:
-                self.controller.cart.append((pid, qty))
+            self.controller.cart.append((vals[0],qty))
             self.update_total()
 
     def update_total(self):
         total = 0.0
-        for pid, qty in self.controller.cart:
-            row = self.controller.query('SELECT price FROM products WHERE id=?', (pid,), fetch=True)
-            if not row:
-                continue
-            price = row[0][0]
-            total += price * qty
-        self.total_label.config(text=f'Total: ${total:.2f}')
+        for pid,qty in self.controller.cart:
+            price = self.controller.query('SELECT price FROM products WHERE id=?',(pid,),fetch=True)[0][0]
+            total += price*qty
+        self.total_label.config(text=f'Total: ${round(total,2)}')
 
     def view_cart(self):
         if not self.controller.cart:
-            messagebox.showinfo('Cart', 'Cart is empty')
+            messagebox.showinfo('Cart','Cart is empty')
             return
         top = tk.Toplevel(self)
         top.title('Cart Details')
-        tree = ttk.Treeview(top, columns=('name', 'qty', 'price', 'subtotal'), show='headings')
-        for c in ('name', 'qty', 'price', 'subtotal'):
+        tree = ttk.Treeview(top, columns=('name','qty','price','subtotal'), show='headings')
+        for c in ('name','qty','price','subtotal'):
             tree.heading(c, text=c.title())
-            tree.column(c, anchor='center')
         tree.pack(fill='both', expand=True)
         total = 0
-        for pid, qty in self.controller.cart:
-            row = self.controller.query('SELECT name,price FROM products WHERE id=?', (pid,), fetch=True)
-            if not row:
-                continue
-            n, p = row[0]
-            sub = p * qty
-            total += sub
-            tree.insert('', 'end', values=(n, qty, f'{p:.2f}', f'{sub:.2f}'))
-        ttk.Label(top, text=f'Total: ${total:.2f}').pack(pady=6)
+        for pid,qty in self.controller.cart:
+            n,p = self.controller.query('SELECT name,price FROM products WHERE id=?',(pid,),fetch=True)[0]
+            sub=p*qty
+            total+=sub
+            tree.insert('', 'end', values=(n,qty,p,round(sub,2)))
+        ttk.Label(top, text=f'Total: ${round(total,2)}').pack()
 
     def checkout(self):
         if not self.controller.cart:
-            messagebox.showinfo('Empty', 'Cart is empty')
+            messagebox.showinfo('Empty','Cart is empty')
             return
-
-        # compute total and check stock availability
-        total = 0.0
-        for pid, qty in self.controller.cart:
-            row = self.controller.query('SELECT price, stock FROM products WHERE id=?', (pid,), fetch=True)
-            if not row:
-                messagebox.showerror('Error', f'Product id {pid} not found.')
-                return
-            price, stock = row[0]
-            if stock is not None and qty > stock:
-                messagebox.showwarning('Stock', f'Not enough stock for product id {pid}. Available: {stock}')
-                return
-            total += price * qty
-
-        u = self.controller.current_user
-        if not u or (u and u[3] != 'customer'):
-            messagebox.showinfo('Guest', 'You must be logged in as a customer to pay with card.')
+        total = sum(self.controller.query('SELECT price FROM products WHERE id=?',(pid,),fetch=True)[0][0]*qty for pid,qty in self.controller.cart)
+        u = self.controller.user
+        if not u or u['role']!='customer':
+            messagebox.showinfo('Guest','You must be logged in to pay with card.')
             return
-
-        card_number = u[4]
-        if not card_number:
-            messagebox.showwarning('No Card', 'Add a card in your account first.')
+        if not u['card_number']:
+            messagebox.showwarning('No Card','Add a card in your account first.')
             return
-
-        confirm = messagebox.askyesno('Payment', f'Charge ${total:.2f} to card ending {str(card_number)[-4:]}?')
+        confirm = messagebox.askyesno('Payment', f'Charge ${round(total,2)} to card ending {u["card_number"][-4:]}?')
         if not confirm:
             return
-
-        # perform DB insert for order and order_products and decrement stock
-        conn = sqlite3.connect(DB_FILE)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        c = conn.cursor()
-        try:
-            c.execute('INSERT INTO orders (user_id, total) VALUES (?, ?)', (u[0], total))
-            order_id = c.lastrowid
-            for pid, qty in self.controller.cart:
-                c.execute('INSERT INTO order_products (order_id, product_id, quantity) VALUES (?, ?, ?)', (order_id, pid, qty))
-                # decrement stock
-                c.execute('UPDATE products SET stock = stock - ? WHERE id = ?', (qty, pid))
-            # award loyalty points (1 point per $10)
-            points = int(total // 10)
-            c.execute('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id=?', (points, u[0]))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            messagebox.showerror('Error', f'Failed to place order: {e}')
-            conn.close()
-            return
-        conn.close()
-
-        messagebox.showinfo('Payment', 'Payment successful (simulated).')
+        # simulate deduction
+        messagebox.showinfo('Payment','Payment successful (simulated).')
+        self.controller.query('INSERT INTO orders (user_id,total) VALUES (?,?)',(u['id'],total))
+        points = int(total//10)
+        self.controller.query('UPDATE users SET loyalty_points = loyalty_points + ? WHERE id=?',(points,u['id']))
         self.controller.cart.clear()
         self.update_total()
-        messagebox.showinfo('Done', f'Order completed, earned {points} loyalty points.')
+        messagebox.showinfo('Done',f'Order completed, earned {points} loyalty points.')
 
 
 # ====================== STAFF PAGE ==========================
@@ -494,11 +424,11 @@ class AdminReportsPage(ttk.Frame):
         f = self.filter_var.get()
         clause = ""
         if f == 'Today':
-            clause = "WHERE date(o.timestamp)=date('now')"
+            clause = "WHERE date(timestamp)=date('now')"
         elif f == 'This Week':
-            clause = "WHERE date(o.timestamp)>=date('now','-7 day')"
+            clause = "WHERE date(timestamp)>=date('now','-7 day')"
         elif f == 'This Month':
-            clause = "WHERE strftime('%Y-%m',o.timestamp)=strftime('%Y-%m','now')"
+            clause = "WHERE strftime('%Y-%m',timestamp)=strftime('%Y-%m','now')"
 
         rows = self.controller.query(f"""
             SELECT u.username, o.total, o.timestamp
@@ -506,7 +436,7 @@ class AdminReportsPage(ttk.Frame):
             JOIN users u ON u.id=o.user_id
             {clause}
             ORDER BY o.timestamp DESC
-        """, fetch=True) or []
+        """, fetch=True)
 
         for i in self.tree.get_children():
             self.tree.delete(i)
@@ -518,7 +448,7 @@ class AdminReportsPage(ttk.Frame):
         self._data = rows
 
     def export_csv(self):
-        if not hasattr(self, "_data") or not self._data:
+        if not hasattr(self, "_data"):
             messagebox.showerror("Error", "No data to export.")
             return
         file = filedialog.asksaveasfilename(defaultextension=".csv")
@@ -532,7 +462,7 @@ class AdminReportsPage(ttk.Frame):
         messagebox.showinfo("Export", f"Data exported to {file}")
 
     def show_sales_chart(self):
-        if not hasattr(self, "_data") or not self._data:
+        if not hasattr(self, "_data"):
             messagebox.showerror("Error", "No data to chart.")
             return
         sales = {}
@@ -547,14 +477,14 @@ class AdminReportsPage(ttk.Frame):
 
     def show_top_products(self):
         q = """
-            SELECT p.name, SUM(op.quantity) as total_qty
+            SELECT p.name, SUM(op.quantity)
             FROM order_products op
             JOIN products p ON p.id=op.product_id
             GROUP BY p.id
-            ORDER BY total_qty DESC
+            ORDER BY SUM(op.quantity) DESC
             LIMIT 5
         """
-        data = self.controller.query(q, fetch=True) or []
+        data = self.controller.query(q, fetch=True)
         if not data:
             messagebox.showinfo("No Data", "No product data available.")
             return
@@ -565,14 +495,14 @@ class AdminReportsPage(ttk.Frame):
 
     def show_top_customers(self):
         q = """
-            SELECT u.username, COUNT(o.id) as orders_count
+            SELECT u.username, COUNT(o.id)
             FROM orders o
             JOIN users u ON u.id=o.user_id
             GROUP BY u.id
-            ORDER BY orders_count DESC
+            ORDER BY COUNT(o.id) DESC
             LIMIT 5
         """
-        data = self.controller.query(q, fetch=True) or []
+        data = self.controller.query(q, fetch=True)
         if not data:
             messagebox.showinfo("No Data", "No customer data available.")
             return
