@@ -180,6 +180,11 @@ class ProductPage(ttk.Frame):
 
         # 每次加载完都检查一次低库存
         self.check_low_stock()
+#删除 Treeview 里原来的所有行。
+#从数据库读出所有产品。
+#用 tree.insert 把每一条插入到表格里。
+#f"{r[3]:.2f}"：把价格格式化为两位小数。
+#最后调用 check_low_stock() 更新顶部的低库存提示。
 
     def check_low_stock(self):
         """
@@ -198,6 +203,11 @@ class ProductPage(ttk.Frame):
             parts = [f"{name} (stock: {stock})" for (name, stock) in rows]
             text = "⚠ Low stock (<10): " + ";  ".join(parts)
             self.low_stock_label.config(text=text)
+            #SQL 条件：stock < 10 的产品会被查出来。
+
+#如果一个都没有：Label 显示 "All stock levels are OK."
+#如果有：拼一个字符串，比如⚠ Low stock (<10): iPhone (stock: 5); AirPods (stock: 3)
+#更新 self.low_stock_label 的文字。
 
     # ---------- 选中表格行，填充到输入框 ----------
     def on_select(self, event):
@@ -219,6 +229,9 @@ class ProductPage(ttk.Frame):
 
         self.stock_entry.delete(0, "end")
         self.stock_entry.insert(0, stock)
+#self.tree.selection()：获取被选中的行 id（可能选多行，这里只取第一个）。
+#tree.item(..., "values")：得到这一行所有列的值。
+#把对应的值放进下面四个输入框里，方便修改或查看。
 
     # ---------- 新增 ----------
     def add_product(self):
@@ -248,6 +261,11 @@ class ProductPage(ttk.Frame):
             (cat, name, price, stock)
         )
         self.load_products()
+#从输入框里取值，并去掉前后空格。
+#检查必填项（类别、名字、价格）。
+#把字符串转成 float / int，如果失败就弹出错误提示。
+#INSERT 进数据库。
+#插入成功后重新 load_products()，刷新界面 + 低库存提示。
 
     # ---------- 更新 ----------
     def update_product(self):
