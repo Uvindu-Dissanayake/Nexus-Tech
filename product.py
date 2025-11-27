@@ -68,6 +68,10 @@ class ProductPage(ttk.Frame):
         # 标题
         ttk.Label(self, text="Product Management",
                   font=("Helvetica", 16, "bold")).pack(pady=10)
+# 继承 ttk.Frame：是一个“页面/容器”。
+#parent：就是 App 主窗口。
+#self.conn = conn：保存从 App 传进来的数据库连接。
+#Label：标题文字
 
         # 低库存提示（红色），一开始先显示“都正常”
         self.low_stock_label = ttk.Label(
@@ -76,6 +80,9 @@ class ProductPage(ttk.Frame):
             foreground="red"
         )
         self.low_stock_label.pack(pady=5)
+#low_stock_label：红色字体的标签，用来显示低库存信息。
+#一开始文字是 "All stock levels are OK."。
+#Refresh 按钮：点击就调用 self.load_products() 重新从数据库读取数据 + 更新低库存提示。
 
         # 刷新按钮
         ttk.Button(self, text="Refresh", command=self.load_products).pack(pady=5)
