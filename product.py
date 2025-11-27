@@ -302,11 +302,6 @@ class ProductPage(ttk.Frame):
             (cat, name, price, stock, product_id)
         )
         self.load_products()
-# 必须先选中一行才能更新。
-#从选中行拿到 id（主键）。
-#从输入框取出新值，验证格式。
-#执行 UPDATE。
-#更新成功后刷新表格。
 
     # ---------- 删除 ----------
     def delete_product(self):
@@ -323,12 +318,6 @@ class ProductPage(ttk.Frame):
 
         self.run_sql("DELETE FROM products WHERE id=?", (product_id,))
         self.load_products()
-        #也是必须先选中一行。
-
-#拿到这行的 id 和 name。
-#askyesno：弹出“确认删除吗？”对话框。
-#用户点 Yes 后，执行 DELETE。
-#删除后刷新表格。
 
 
 # ---------- 入口 ----------
