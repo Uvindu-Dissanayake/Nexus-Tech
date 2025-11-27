@@ -155,6 +155,10 @@ class ProductPage(ttk.Frame):
         if fetch:
             return cur.fetchall()
         self.conn.commit()
+#统一封装执行 SQL：
+#sql：SQL 语句。
+#params：参数，用 ? 占位的那种。
+#fetch=True：表示要 SELECT 返回结果；否则就是 INSERT/UPDATE/DELETE 只提交，不返回。fetchall()：把查询结果一次性取出，返回列表。
 
     # ---------- 加载表格 + 检查低库存 ----------
     def load_products(self):
