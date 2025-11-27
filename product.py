@@ -3,6 +3,11 @@ from tkinter import ttk, messagebox
 import sqlite3
 
 DB_FILE = "shop.db"
+#tkinter：Python 自带的图形界面库，tk 是窗口控件（Button、Label 等）的前缀。
+#ttk：tkinter 的“美化版控件”，外观更好看一点。
+#messagebox：弹出提示框（警告、错误、信息）的模块。
+#sqlite3：内置的轻量级数据库，不需要安装服务器，直接用一个文件当数据库。
+#DB_FILE = "shop.db"：指定数据库文件名，后面连库都用这个
 
 
 # ---------- 创建数据库和表 ----------
@@ -20,6 +25,12 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+#sqlite3.connect(DB_FILE)：连上 shop.db，如果文件不存在会自动创建。
+#cursor()：获取一个“游标”，用来执行 SQL 语句。
+#CREATE TABLE IF NOT EXISTS：如果没有 products 这张表，就创建：
+#id：主键，自增。
+#commit()：提交更改。
+#close()：关闭连接。
 
 
 # ---------- 主窗口 ----------
