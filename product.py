@@ -80,12 +80,12 @@ class ProductPage(ttk.Frame):
             foreground="red"
         )
         self.low_stock_label.pack(pady=5)
-#low_stock_label：红色字体的标签，用来显示低库存信息。
-#一开始文字是 "All stock levels are OK."。
-#Refresh 按钮：点击就调用 self.load_products() 重新从数据库读取数据 + 更新低库存提示。
 
         # 刷新按钮
         ttk.Button(self, text="Refresh", command=self.load_products).pack(pady=5)
+#low_stock_label：红色字体的标签，用来显示低库存信息。
+#一开始文字是 "All stock levels are OK."。
+#Refresh 按钮：点击就调用 self.load_products() 重新从数据库读取数据 + 更新低库存提示。
 
         # 产品表格
         columns = ("id", "category", "name", "price", "stock")
@@ -97,6 +97,13 @@ class ProductPage(ttk.Frame):
 
         # 点击表格中的一行时，把数据放到下面的输入框里
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
+#Treeview：一个表格控件。
+#columns：定义列名。
+#show="headings"：只显示标题，不显示树形的第一列。
+#heading：设置每一列的标题文字。
+#column：设置对齐方式、列宽。
+#bind("<<TreeviewSelect>>", self.on_select)：
+#当用户点选了一行，触发 on_select 函数，把数据放进下面的输入框里。
 
         # 输入区域
         form = ttk.Frame(self)
@@ -117,6 +124,9 @@ class ProductPage(ttk.Frame):
         ttk.Label(form, text="Stock:").grid(row=1, column=2, sticky="e", padx=5, pady=3)
         self.stock_entry = ttk.Entry(form, width=20)
         self.stock_entry.grid(row=1, column=3, padx=5, pady=3)
+#用一个 Frame 把下面的标签和输入框装在一起。
+#grid(row=?, column=?)：表格布局，按行列摆放。
+#4个字段：Category / Name / Price / Stock。
 
         # 按钮
         btn_frame = ttk.Frame(self)
@@ -131,6 +141,12 @@ class ProductPage(ttk.Frame):
 
         # 先加载一次数据
         self.load_products()
+       # 三个按钮分别绑定三个方法：
+
+#add_product：新增一条记录。
+#update_product：修改选中的那一条。
+#delete_product：删除选中的那一条。
+#load_products()：页面创建好之后立刻从数据库读一次数据，填满表格，并检查低库存。
 
     # ---------- 小工具：执行 SQL ----------
     def run_sql(self, sql, params=(), fetch=False):
