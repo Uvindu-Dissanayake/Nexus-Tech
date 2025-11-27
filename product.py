@@ -53,14 +53,18 @@ class App(tk.Tk):
     def on_close(self):
         self.conn.close()
         self.destroy()
-
-
+#class App(tk.Tk)：定义一个类，继承 tk.Tk，也就是整个主窗口。
+#super().__init__()：调用父类构造函数，创建窗口。
+#self.title(...) / self.geometry(...)：设置标题、窗口大小。
+#self.conn：创建一个数据库连接，整个程序共享这一条连接。
+#ProductPage(self, self.conn)：创建一个“产品管理页面”对象。
+#pack(fill="both", expand=True)：让页面充满整个窗口。
+#protocol("WM_DELETE_WINDOW", self.on_close)：点右上角关闭按钮时，先执行 on_close：关闭数据库连接；销毁窗口。
 # ---------- 产品管理页面 ----------
 class ProductPage(ttk.Frame):
     def __init__(self, parent, conn):
         super().__init__(parent)
         self.conn = conn
-
         # 标题
         ttk.Label(self, text="Product Management",
                   font=("Helvetica", 16, "bold")).pack(pady=10)
