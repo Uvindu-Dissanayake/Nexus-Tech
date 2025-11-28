@@ -377,9 +377,7 @@ def open_login_window(role):
         password = entry_pass.get()
         lbl_error.config(text="")
 
-        if username in USERS[role] and USERS[role][username] == password:
-            messagebox.showinfo("Welcome",
-                                f"Welcome to Nexus, {role.capitalize()}!")
+        
         else:
             lbl_error.config(text="Incorrect username or password.")
 
