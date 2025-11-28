@@ -12,7 +12,7 @@ GLOW = "#4b39bb"              # цвет рамки вокруг карточе�
 # Login Passwords 
 USERS = {
     "admin": {"admin": "1234"},
-    "staff": {"staff": "5678"}
+    "staff": {"staff":5678}
 }
 current_role = None
 LOGO = None   # сюда загрузим картинку после создания root
@@ -285,7 +285,7 @@ def open_change_password_window(role):
 
 
 # ======================================================
-# СТРАНИЦА 2: ЛОГИН ДЛЯ ВЫБРАННОЙ РОЛИ
+# Page 2: Login for chosen role
 # ======================================================
 def open_login_window(role):
     global current_role
@@ -297,7 +297,7 @@ def open_login_window(role):
     frame = tk.Frame(root, bg=BG_GRADIENT)
     frame.pack(expand=True, fill="both")
 
-    # Лого сверху
+    # logo on top
     if LOGO is not None:
         logo_label = tk.Label(frame, image=LOGO, bg=BG_GRADIENT)
         logo_label.pack(pady=(20, 5))
@@ -399,7 +399,6 @@ def open_login_window(role):
         command=do_login
     )
     btn_login.pack(pady=6)
-
     btn_forgot = tk.Button(
         card,
         text="Forgot username/password?",
@@ -416,11 +415,9 @@ def open_login_window(role):
         )
     )
     btn_forgot.pack(pady=(0, 4))
-
-    # блок Create account / Change password
+    # Create account / Change password
     links = tk.Frame(card, bg=CARD_COLOR)
     links.pack(pady=2)
-
     btn_create = tk.Button(
         links,
         text="Create account",
@@ -434,7 +431,6 @@ def open_login_window(role):
         command=lambda: open_create_account_window(role)
     )
     btn_create.grid(row=0, column=0, padx=5)
-
     btn_change = tk.Button(
         links,
         text="Change password",
