@@ -1,0 +1,1958 @@
+#!/usr/bin/env python3
+"""
+NEXUS TECHSHOP – Combined Project (Single File)
+Includes:
+- Login & Role Selection (Admin / Staff)
+- POS Billing System (SQLite)
+- Customer Management System (MySQL backend)
+- Sales Reports Dashboard (Charts)
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, filedialog
+import math
+import sqlite3
+from datetime import datetime
+import csv
+import os
+
+# ---------- Optional external libs ----------
+HAS_REPORTLAB = True
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas as pdfcanvas
+except Exception:
+    HAS_REPORTLAB = False
+
+HAS_MYSQL = True
+try:
+    import mysql.connector
+except Exception:
+    HAS_MYSQL = False
+
+# ---------- Global UI / Login Config ----------
+BG_GRADIENT = "#0e0e10"
+CARD_COLOR = "#1a1b26"
+TEXT_LIGHT = "#ffffff"
+ACCENT = "#7d5fff"
+ACCENT_HOVER = "#9b87ff"
+GLOW = "#4b39bb"
+
+# Login Passwords (in-memory; Create Account modifies this in RAM)
+USERS = {
+    "admin": {"admin": "1234"},
+    "staff": {"staff": "5678"}
+}
+
+current_role = None
+LOGO = None
+
+# POS / DB config
+DB_FILE = "shop.db"          # SQLite file for POS
+TAX_RATE = 0.15              # 15% GST
+LOYALTY_PER_DOLLAR = 0.1     # 0.1 point per $1
+
+# ---------------------------------------
+# Helper: clear all widgets from root
+# ---------------------------------------
+def clear_root():
+    for w in root.winfo_children():
+        w.destroy()
+
+# ---------------------------------------
+# Logo Loader
+# ---------------------------------------
+def load_logo():
+    global LOGO
+    try:
+        LOGO = tk.PhotoImage(file="nexus_logo.png")
+    except Exception:
+        LOGO = None
+
+# ---------------------------------------
+# MySQL Connection Helper (edit this!)
+# ---------------------------------------
+def get_mysql_connection():
+    if not HAS_MYSQL:
+        raise RuntimeError("MySQL connector not installed.")
+    # TODO: change credentials to match your environment
+    conn = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="your_password",
+        database="nexus_tech"
+    )
+    return conn
+
+# =====================================================
+# CUSTOMER MANAGEMENT SYSTEM (BACKEND – MySQL)
+# =====================================================
+class CustomerManagementSystem:
+    """
+    Customer/Client Management System for Nexus Tech (MySQL)
+    """
+    def __init__(self, db_connection):
+        self.conn = db_connection
+
+    def register_customer(self, name, contact, email, address, customer_type='Regular'):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO Customer_Details 
+                (customer_name, customer_contact, customer_email, customer_address, 
+                 customer_type, loyalty_points, membership_level, registration_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (name, contact, email, address, customer_type, 0, 'Bronze', datetime.now()))
+            self.conn.commit()
+            customer_id = cursor.lastrowid
+            return True, customer_id, "Customer registered successfully"
+        except Exception as e:
+            return False, None, f"Error: {str(e)}"
+
+    def update_customer(self, customer_id, name=None, contact=None, email=None,
+                        address=None, customer_type=None):
+        try:
+            cursor = self.conn.cursor()
+            update_fields = []
+            values = []
+            if name:
+                update_fields.append("customer_name = %s")
+                values.append(name)
+            if contact:
+                update_fields.append("customer_contact = %s")
+                values.append(contact)
+            if email:
+                update_fields.append("customer_email = %s")
+                values.append(email)
+            if address:
+                update_fields.append("customer_address = %s")
+                values.append(address)
+            if customer_type:
+                update_fields.append("customer_type = %s")
+                values.append(customer_type)
+
+            if not update_fields:
+                return False, "No fields to update"
+
+            values.append(customer_id)
+            query = f"UPDATE Customer_Details SET {', '.join(update_fields)} WHERE customer_id = %s"
+            cursor.execute(query, tuple(values))
+            self.conn.commit()
+            return True, "Customer updated successfully"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    def get_customer_category(self, customer_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT customer_type, loyalty_points, membership_level 
+                FROM Customer_Details WHERE customer_id = %s
+            """, (customer_id,))
+            result = cursor.fetchone()
+            if result:
+                return result[0], result[1], result[2]
+            return None, None, None
+        except Exception as e:
+            print(f"Error getting customer category: {e}")
+            return None, None, None
+
+    def update_membership_level(self, customer_id, loyalty_points):
+        try:
+            if loyalty_points < 500:
+                level = 'Bronze'
+            elif loyalty_points < 1000:
+                level = 'Silver'
+            elif loyalty_points < 2000:
+                level = 'Gold'
+            else:
+                level = 'Platinum'
+
+            cursor = self.conn.cursor()
+            if level == 'Platinum':
+                cursor.execute("""
+                    UPDATE Customer_Details 
+                    SET membership_level = %s, customer_type = 'VIP'
+                    WHERE customer_id = %s
+                """, (level, customer_id))
+            else:
+                cursor.execute("""
+                    UPDATE Customer_Details 
+                    SET membership_level = %s
+                    WHERE customer_id = %s
+                """, (level, customer_id))
+            self.conn.commit()
+            return True, level
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    def calculate_discount(self, customer_id, subtotal):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT customer_type, membership_level, loyalty_points 
+                FROM Customer_Details WHERE customer_id = %s
+            """, (customer_id,))
+            result = cursor.fetchone()
+            if not result:
+                return 0, "Customer not found"
+
+            customer_type, membership_level, loyalty_points = result
+            discount_percent = 0
+
+            if customer_type == 'Student':
+                discount_percent = 10
+            elif customer_type == 'VIP':
+                discount_percent = 15
+            elif customer_type == 'Regular':
+                if membership_level == 'Silver':
+                    discount_percent = 5
+                elif membership_level == 'Gold':
+                    discount_percent = 10
+                elif membership_level == 'Platinum':
+                    discount_percent = 15
+
+            loyalty_discount = (loyalty_points // 100) * 10
+            percentage_discount = subtotal * (discount_percent / 100)
+            total_discount = percentage_discount + loyalty_discount
+
+            return total_discount, f"{discount_percent}% + ${loyalty_discount} loyalty"
+        except Exception as e:
+            return 0, f"Error: {str(e)}"
+
+    def add_loyalty_points(self, customer_id, purchase_amount):
+        try:
+            points_earned = int(purchase_amount)
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE Customer_Details 
+                SET loyalty_points = loyalty_points + %s
+                WHERE customer_id = %s
+            """, (points_earned, customer_id))
+            cursor.execute("SELECT loyalty_points FROM Customer_Details WHERE customer_id = %s",
+                           (customer_id,))
+            new_points = cursor.fetchone()[0]
+            self.conn.commit()
+            self.update_membership_level(customer_id, new_points)
+            return True, points_earned, new_points
+        except Exception as e:
+            return False, 0, f"Error: {str(e)}"
+
+    def use_loyalty_points(self, customer_id, points_to_use):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT loyalty_points FROM Customer_Details WHERE customer_id = %s",
+                           (customer_id,))
+            current_points = cursor.fetchone()[0]
+            if current_points < points_to_use:
+                return False, "Insufficient loyalty points"
+
+            cursor.execute("""
+                UPDATE Customer_Details 
+                SET loyalty_points = loyalty_points - %s
+                WHERE customer_id = %s
+            """, (points_to_use, customer_id))
+            self.conn.commit()
+            return True, "Points deducted successfully"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    def record_transaction(self, customer_id, total_amount, items_purchased,
+                           discount_applied, payment_method):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO Transaction_History 
+                (customer_id, transaction_date, total_amount, items_purchased, 
+                 discount_applied, payment_method)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (customer_id, datetime.now(), total_amount, items_purchased,
+                  discount_applied, payment_method))
+            self.conn.commit()
+            self.add_loyalty_points(customer_id, total_amount)
+            return True, "Transaction recorded successfully"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    def get_transaction_history(self, customer_id, limit=10):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT transaction_id, transaction_date, total_amount, 
+                       items_purchased, discount_applied, payment_method
+                FROM Transaction_History
+                WHERE customer_id = %s
+                ORDER BY transaction_date DESC
+                LIMIT %s
+            """, (customer_id, limit))
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error retrieving transaction history: {e}")
+            return []
+
+    def get_customer_analytics(self, customer_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*), SUM(total_amount), AVG(total_amount)
+                FROM Transaction_History
+                WHERE customer_id = %s
+            """, (customer_id,))
+            result = cursor.fetchone()
+            if result and result[0]:
+                total_transactions = result[0]
+                total_spent = result[1] or 0
+                avg_purchase = result[2] or 0
+            else:
+                total_transactions = 0
+                total_spent = 0
+                avg_purchase = 0
+
+            cursor.execute("""
+                SELECT customer_name, customer_type, membership_level, 
+                       loyalty_points, registration_date
+                FROM Customer_Details
+                WHERE customer_id = %s
+            """, (customer_id,))
+            customer_info = cursor.fetchone()
+            return {
+                'customer_name': customer_info[0] if customer_info else 'N/A',
+                'customer_type': customer_info[1] if customer_info else 'N/A',
+                'membership_level': customer_info[2] if customer_info else 'N/A',
+                'loyalty_points': customer_info[3] if customer_info else 0,
+                'registration_date': customer_info[4] if customer_info else None,
+                'total_transactions': total_transactions,
+                'total_spent': float(total_spent),
+                'average_purchase': float(avg_purchase)
+            }
+        except Exception as e:
+            print(f"Error getting customer analytics: {e}")
+            return None
+
+    def get_vip_customers(self):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT customer_id, customer_name, customer_contact, 
+                       loyalty_points, membership_level
+                FROM Customer_Details
+                WHERE customer_type = 'VIP' OR membership_level = 'Platinum'
+                ORDER BY loyalty_points DESC
+            """)
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error getting VIP customers: {e}")
+            return []
+
+    def search_customers(self, search_term):
+        try:
+            cursor = self.conn.cursor()
+            search_pattern = f"%{search_term}%"
+            cursor.execute("""
+                SELECT customer_id, customer_name, customer_contact, 
+                       customer_email, customer_type, loyalty_points
+                FROM Customer_Details
+                WHERE customer_name LIKE %s 
+                   OR customer_contact LIKE %s 
+                   OR customer_email LIKE %s
+            """, (search_pattern, search_pattern, search_pattern))
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error searching customers: {e}")
+            return []
+
+# =====================================================
+# SIMPLE CUSTOMER MANAGEMENT UI PAGE (MySQL)
+# =====================================================
+class CustomerManagementPage(ttk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent)
+        ttk.Label(self, text="Customer Management (MySQL)", font=("Arial", 16, "bold")).pack(pady=10)
+
+        back_btn = ttk.Button(self, text="← Back to Main Menu",
+                              command=open_main_menu)
+        back_btn.pack(pady=5)
+
+        if not HAS_MYSQL:
+            ttk.Label(self, text="MySQL connector not installed.\nInstall: pip install mysql-connector-python",
+                      foreground="red").pack(pady=20)
+            return
+
+        form = ttk.Frame(self)
+        form.pack(pady=10)
+
+        ttk.Label(form, text="Name").grid(row=0, column=0, sticky="e")
+        ttk.Label(form, text="Contact").grid(row=1, column=0, sticky="e")
+        ttk.Label(form, text="Email").grid(row=2, column=0, sticky="e")
+        ttk.Label(form, text="Address").grid(row=3, column=0, sticky="e")
+        ttk.Label(form, text="Type").grid(row=4, column=0, sticky="e")
+
+        self.name_var = tk.StringVar()
+        self.contact_var = tk.StringVar()
+        self.email_var = tk.StringVar()
+        self.addr_var = tk.StringVar()
+        self.type_var = tk.StringVar(value="Regular")
+
+        ttk.Entry(form, textvariable=self.name_var, width=30).grid(row=0, column=1, padx=5, pady=3)
+        ttk.Entry(form, textvariable=self.contact_var, width=30).grid(row=1, column=1, padx=5, pady=3)
+        ttk.Entry(form, textvariable=self.email_var, width=30).grid(row=2, column=1, padx=5, pady=3)
+        ttk.Entry(form, textvariable=self.addr_var, width=30).grid(row=3, column=1, padx=5, pady=3)
+        ttk.Combobox(form, textvariable=self.type_var,
+                     values=["Regular", "Student", "VIP"], width=27,
+                     state="readonly").grid(row=4, column=1, padx=5, pady=3)
+
+        self.status_label = ttk.Label(self, text="", foreground="green")
+        self.status_label.pack(pady=5)
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=8)
+        ttk.Button(btn_frame, text="Register Customer", command=self.register_customer).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Clear Fields", command=self.clear_fields).pack(side="left", padx=4)
+
+        self.cms = None
+        try:
+            conn = get_mysql_connection()
+            self.cms = CustomerManagementSystem(conn)
+        except Exception as e:
+            self.status_label.config(text=f"MySQL connection error: {e}", foreground="red")
+
+    def register_customer(self):
+        if not self.cms:
+            self.status_label.config(text="No MySQL connection.", foreground="red")
+            return
+        name = self.name_var.get().strip()
+        if not name:
+            self.status_label.config(text="Name is required.", foreground="red")
+            return
+        contact = self.contact_var.get().strip()
+        email = self.email_var.get().strip()
+        addr = self.addr_var.get().strip()
+        ctype = self.type_var.get()
+
+        ok, cid, msg = self.cms.register_customer(name, contact, email, addr, ctype)
+        if ok:
+            self.status_label.config(text=f"{msg} (ID: {cid})", foreground="green")
+        else:
+            self.status_label.config(text=msg, foreground="red")
+
+    def clear_fields(self):
+        self.name_var.set("")
+        self.contact_var.set("")
+        self.email_var.set("")
+        self.addr_var.set("")
+        self.type_var.set("Regular")
+        self.status_label.config(text="")
+
+# =====================================================
+# SALES REPORTS DASHBOARD (Charts)
+# =====================================================
+class ReportPage(ttk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        ttk.Label(self, text="Sales Reports Dashboard", font=("Arial", 20, "bold")).pack(pady=10)
+
+        ttk.Button(self, text="← Back to Main Menu",
+                   command=open_main_menu).pack(pady=5)
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text="Line Chart", command=self.show_line).grid(row=0, column=0, padx=10)
+        ttk.Button(btn_frame, text="Bar Chart", command=self.show_bar).grid(row=0, column=1, padx=10)
+        ttk.Button(btn_frame, text="Pie Chart", command=self.show_pie).grid(row=0, column=2, padx=10)
+
+        self.canvas = tk.Canvas(self, width=700, height=420, bg="white",
+                                highlightthickness=1, highlightbackground="black")
+        self.canvas.pack(pady=20)
+
+        self.months = ["Jan", "Feb", "Mar", "Apr", "May"]
+        self.values = [10, 25, 18, 30, 22]
+
+        self.show_line()
+
+    def show_line(self):
+        self.canvas.delete("all")
+        months = self.months
+        values = self.values
+        max_val = max(values)
+        for y in range(50, 351, 50):
+            self.canvas.create_line(50, y, 650, y, fill="#e0e0e0")
+        self.canvas.create_line(50, 350, 650, 350, width=2)
+        self.canvas.create_line(50, 350, 50, 50, width=2)
+
+        for i in range(len(values)-1):
+            x1 = 100 + i * 100
+            y1 = 350 - (values[i] / max_val) * 250
+            x2 = 100 + (i + 1) * 100
+            y2 = 350 - (values[i+1] / max_val) * 250
+            self.canvas.create_line(x1, y1, x2, y2, fill="blue", width=3)
+            self.canvas.create_oval(x1-5, y1-5, x1+5, y1+5, fill="blue")
+
+        lx = 100 + (len(values)-1) * 100
+        ly = 350 - (values[-1] / max_val) * 250
+        self.canvas.create_oval(lx-5, ly-5, lx+5, ly+5, fill="blue")
+
+        for i, month in enumerate(months):
+            x = 100 + i * 100
+            self.canvas.create_text(x, 365, text=month, font=("Arial", 10))
+
+        self.canvas.create_text(350, 20, text="Sales Line Chart", font=("Arial", 14, "bold"))
+
+    def show_bar(self):
+        self.canvas.delete("all")
+        months = self.months
+        values = self.values
+        max_val = max(values)
+        bar_width = 60
+        gap = 40
+        start_x = 100
+        self.canvas.create_line(80, 50, 80, 350, width=2)
+        self.canvas.create_line(80, 350, 650, 350, width=2)
+
+        for i, val in enumerate(values):
+            x1 = start_x + i * (bar_width + gap)
+            y1 = 350 - (val / max_val) * 250
+            x2 = x1 + bar_width
+            y2 = 350
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill="skyblue", outline="black")
+            self.canvas.create_text(x1 + bar_width/2, y1 - 10, text=str(val), font=("Arial", 10))
+            self.canvas.create_text(x1 + bar_width/2, 365, text=months[i], font=("Arial", 10))
+
+        self.canvas.create_text(350, 20, text="Sales Bar Chart", font=("Arial", 14, "bold"))
+
+    def show_pie(self):
+        self.canvas.delete("all")
+        months = self.months
+        values = self.values
+        total = sum(values)
+        start_angle = 0
+        colors = ["red", "green", "blue", "orange", "purple"]
+
+        for i, val in enumerate(values):
+            extent = (val / total) * 360
+            self.canvas.create_arc(150, 50, 550, 450,
+                                   start=start_angle,
+                                   extent=extent,
+                                   fill=colors[i])
+            mid = math.radians(start_angle + extent / 2)
+            lx = 350 + 150 * math.cos(mid)
+            ly = 250 + 150 * math.sin(mid)
+            self.canvas.create_text(lx, ly, text=f"{months[i]} ({val})")
+            start_angle += extent
+
+        self.canvas.create_text(350, 20, text="Sales Pie Chart", font=("Arial", 14, "bold"))
+
+# =====================================================
+# POS SYSTEM (SQLite) – FRAME VERSION
+# =====================================================
+
+def db_connect():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+def db_query(sql, params=(), fetch=False):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    res = cur.fetchall() if fetch else None
+    conn.commit()
+    conn.close()
+    return res
+
+def ensure_column_exists(table, column, col_def):
+    conn = db_connect()
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [r['name'] for r in cur.fetchall()]
+    if column not in cols:
+        try:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            conn.commit()
+        except Exception:
+            pass
+    conn.close()
+
+def init_db():
+    conn = db_connect()
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            name TEXT,
+            price REAL DEFAULT 0.0,
+            stock INTEGER DEFAULT 0,
+            barcode TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            phone TEXT,
+            email TEXT,
+            loyalty_points INTEGER DEFAULT 0
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_no TEXT UNIQUE,
+            customer_id INTEGER,
+            total REAL,
+            tax REAL,
+            discount REAL,
+            grand_total REAL,
+            payment_method TEXT,
+            payment_details TEXT,
+            staff TEXT,
+            timestamp TEXT DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE SET NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sales_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER,
+            product_id INTEGER,
+            name TEXT,
+            qty INTEGER,
+            price REAL,
+            subtotal REAL,
+            FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+            FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+    ensure_column_exists("products", "barcode", "TEXT")
+
+def generate_invoice_no():
+    t = datetime.now().strftime("%Y%m%d%H%M%S")
+    return f"INV{t}"
+
+class POSApp(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.pack(fill="both", expand=True)
+        master.title("Nexus POS - Billing System")
+        master.geometry("1150x720")
+
+        init_db()
+
+        self.cart = []
+        self.selected_customer = None
+        self.staff_name = "cashier"
+
+        topbar = ttk.Frame(self)
+        topbar.pack(fill="x")
+        ttk.Button(topbar, text="← Back to Main Menu",
+                   command=self.go_back).pack(side="left", padx=4, pady=4)
+        ttk.Label(topbar, text="POS - Billing System",
+                  font=("Helvetica", 14, "bold")).pack(side="left", padx=10)
+
+        main = ttk.Frame(self)
+        main.pack(fill="both", expand=True, padx=8, pady=8)
+
+        left = ttk.Frame(main)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(main, width=420)
+        right.pack(side="right", fill="y")
+
+        self.product_search_frame = ProductSearchFrame(left, self)
+        self.product_search_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+        self.cart_frame = CartCheckoutFrame(right, self)
+        self.cart_frame.pack(fill="y", expand=False, padx=4, pady=4)
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", padx=8, pady=4)
+        ttk.Button(bottom, text="Export Sales CSV", command=self.export_sales_csv).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Open Product Manager", command=self.open_product_manager).pack(side="left", padx=4)
+        ttk.Button(bottom, text="Quit POS", command=self.go_back).pack(side="right", padx=4)
+
+        self.after(200, self.product_search_frame.focus_scanner_entry)
+
+    def go_back(self):
+        clear_root()
+        open_main_menu()
+
+    def add_to_cart(self, product_id, name, price, qty):
+        for item in self.cart:
+            if item['product_id'] == product_id:
+                item['qty'] += qty
+                item['subtotal'] = item['qty'] * item['price']
+                self.cart_frame.refresh_cart()
+                return
+        item = {'product_id': product_id, 'name': name,
+                'price': price, 'qty': qty, 'subtotal': price * qty}
+        self.cart.append(item)
+        self.cart_frame.refresh_cart()
+
+    def remove_from_cart(self, product_id):
+        self.cart = [i for i in self.cart if i['product_id'] != product_id]
+        self.cart_frame.refresh_cart()
+
+    def clear_cart(self):
+        self.cart.clear()
+        self.selected_customer = None
+        self.cart_frame.refresh_cart()
+
+    def compute_totals(self, discount_percent=0.0, discount_amount=0.0):
+        subtotal = sum(i['subtotal'] for i in self.cart)
+        tax = subtotal * TAX_RATE
+        discount_from_percent = subtotal * (discount_percent / 100.0)
+        discount = discount_from_percent + discount_amount
+        grand_total = max(0.0, subtotal + tax - discount)
+        return {
+            'subtotal': subtotal,
+            'tax': tax,
+            'discount': discount,
+            'grand_total': grand_total
+        }
+
+    def checkout(self, payment_method, discount_percent=0.0, discount_amount=0.0, payment_details=None):
+        if not self.cart:
+            messagebox.showwarning("Empty Cart", "Cart is empty.")
+            return False
+
+        totals = self.compute_totals(discount_percent, discount_amount)
+        invoice_no = generate_invoice_no()
+        cust_id = self.selected_customer[0] if self.selected_customer else None
+        staff = self.staff_name
+
+        conn = db_connect()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO sales (invoice_no, customer_id, total, tax, discount, grand_total, payment_method, payment_details, staff)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (invoice_no, cust_id, totals['subtotal'], totals['tax'],
+                  totals['discount'], totals['grand_total'], payment_method, payment_details, staff))
+            sale_id = cur.lastrowid
+
+            for item in self.cart:
+                cur.execute("""
+                    INSERT INTO sales_items (sale_id, product_id, name, qty, price, subtotal)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (sale_id, item['product_id'], item['name'], item['qty'],
+                      item['price'], item['subtotal']))
+                cur.execute("UPDATE products SET stock = stock - ? WHERE id = ?",
+                            (item['qty'], item['product_id']))
+
+            if cust_id:
+                loyalty_points_earned = int(totals['grand_total'] * LOYALTY_PER_DOLLAR)
+                cur.execute("""
+                    UPDATE customers SET loyalty_points = COALESCE(loyalty_points,0) + ? 
+                    WHERE id = ?
+                """, (loyalty_points_earned, cust_id))
+                earned = loyalty_points_earned
+            else:
+                earned = 0
+
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            messagebox.showerror("Checkout Error", f"Failed to complete sale: {e}")
+            conn.close()
+            return False
+
+        conn.close()
+        self.show_receipt(invoice_no, sale_id, totals, payment_method, staff, earned, payment_details)
+        self.clear_cart()
+        return True
+
+    def show_receipt(self, invoice_no, sale_id, totals, payment_method, staff,
+                     loyalty_earned, payment_details=None):
+        rows = db_query("SELECT name, qty, price, subtotal FROM sales_items WHERE sale_id=?",
+                        (sale_id,), fetch=True) or []
+        receipt_win = tk.Toplevel(self)
+        receipt_win.title(f"Receipt - {invoice_no}")
+        receipt_win.geometry("600x600")
+
+        receipt_text = tk.Text(receipt_win, width=80, height=30, wrap="none")
+        receipt_text.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+        scrollbar = ttk.Scrollbar(receipt_win, orient="vertical", command=receipt_text.yview)
+        scrollbar.pack(side="right", fill="y")
+        receipt_text.config(yscrollcommand=scrollbar.set)
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines = []
+        lines.append("=== NEXUS TECH SHOP ===")
+        lines.append(f"Invoice: {invoice_no}")
+        lines.append(f"Date: {now}")
+        if self.selected_customer:
+            lines.append(f"Customer: {self.selected_customer[1]} (ID:{self.selected_customer[0]})")
+        lines.append(f"Staff: {staff}")
+        lines.append("-"*48)
+        lines.append(f"{'Item':30} {'Qty':>3} {'Price':>8} {'Sub':>9}")
+        lines.append("-"*48)
+        for r in rows:
+            name, qty, price, sub = r
+            lines.append(f"{name[:30]:30} {qty:>3} {price:>8.2f} {sub:>9.2f}")
+        lines.append("-"*48)
+        lines.append(f"Subtotal: ${totals['subtotal']:.2f}")
+        lines.append(f"Tax ({TAX_RATE*100:.0f}%): ${totals['tax']:.2f}")
+        lines.append(f"Discount: -${totals['discount']:.2f}")
+        lines.append(f"Grand Total: ${totals['grand_total']:.2f}")
+        lines.append(f"Payment: {payment_method} {('('+str(payment_details)+')') if payment_details else ''}")
+        lines.append("-"*48)
+        if loyalty_earned:
+            lines.append(f"Loyalty points earned: {loyalty_earned}")
+        lines.append("Thank you for shopping with us!")
+        lines.append("=== Powered by POSApp ===")
+
+        content = "\n".join(lines)
+        receipt_text.insert("1.0", content)
+        receipt_text.config(state="disabled")
+
+        btn_frame = ttk.Frame(receipt_win)
+        btn_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Button(btn_frame, text="Save Receipt (.txt)",
+                   command=lambda: self.save_receipt_text(invoice_no, content)).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Save Receipt (.pdf)",
+                   command=lambda: self.save_receipt_pdf(invoice_no, lines)).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Close", command=receipt_win.destroy).pack(side="right", padx=4)
+
+    def save_receipt_text(self, invoice_no, content):
+        fn = filedialog.asksaveasfilename(defaultextension=".txt", initialfile=f"{invoice_no}.txt")
+        if not fn:
+            return
+        with open(fn, "w", encoding="utf-8") as f:
+            f.write(content)
+        messagebox.showinfo("Saved", f"Receipt saved to {fn}")
+
+    def save_receipt_pdf(self, invoice_no, lines):
+        if not HAS_REPORTLAB:
+            messagebox.showerror("PDF Not Available",
+                                 "PDF generation requires 'reportlab'.\nInstall with: pip install reportlab")
+            return
+        fn = filedialog.asksaveasfilename(defaultextension=".pdf", initialfile=f"{invoice_no}.pdf")
+        if not fn:
+            return
+        try:
+            c = pdfcanvas.Canvas(fn, pagesize=A4)
+            width, height = A4
+            x = 40
+            y = height - 40
+            line_height = 14
+            c.setFont("Courier", 10)
+            for line in lines:
+                if y < 40:
+                    c.showPage()
+                    y = height - 40
+                    c.setFont("Courier", 10)
+                c.drawString(x, y, line)
+                y -= line_height
+            c.save()
+            messagebox.showinfo("Saved", f"PDF receipt saved to {fn}")
+        except Exception as e:
+            messagebox.showerror("PDF Error", f"Failed to save PDF: {e}")
+
+    def export_sales_csv(self):
+        rows = db_query("""
+            SELECT s.invoice_no, s.timestamp, s.grand_total, s.payment_method, s.payment_details, c.name as customer
+            FROM sales s
+            LEFT JOIN customers c ON c.id = s.customer_id
+            ORDER BY s.timestamp DESC
+        """, fetch=True) or []
+        if not rows:
+            messagebox.showinfo("No Data", "No sales to export.")
+            return
+        fn = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="sales_export.csv")
+        if not fn:
+            return
+        with open(fn, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Invoice", "Timestamp", "Grand Total", "Payment Method", "Payment Details", "Customer"])
+            for r in rows:
+                w.writerow([r['invoice_no'], r['timestamp'], f"{r['grand_total']:.2f}",
+                            r['payment_method'], r['payment_details'] or "", r['customer'] or ""])
+        messagebox.showinfo("Exported", f"Sales exported to {fn}")
+
+    def open_product_manager(self):
+        pm = ProductQuickManager(self)
+        pm.grab_set()
+
+class ProductSearchFrame(ttk.Frame):
+    def __init__(self, parent, app: POSApp):
+        super().__init__(parent)
+        self.app = app
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=4, pady=4)
+
+        ttk.Label(top, text="Scan Barcode / ID:").pack(side="left", padx=4)
+        self.scan_var = tk.StringVar()
+        self.scan_entry = ttk.Entry(top, textvariable=self.scan_var, width=25)
+        self.scan_entry.pack(side="left", padx=4)
+        self.scan_entry.bind("<Return>", self.on_scan_enter)
+
+        ttk.Label(top, text="Search Product:").pack(side="left", padx=8)
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(top, textvariable=self.search_var, width=40)
+        self.search_entry.pack(side="left", padx=4)
+        ttk.Button(top, text="Search", command=self.search).pack(side="left", padx=4)
+        ttk.Button(top, text="Show All", command=self.load_all).pack(side="left", padx=4)
+
+        middle = ttk.Frame(self)
+        middle.pack(fill="both", expand=True, padx=4, pady=4)
+
+        left_list = ttk.Frame(middle)
+        left_list.pack(side="left", fill="y")
+
+        ttk.Label(left_list, text="Categories").pack(anchor="w")
+        self.cat_listbox = tk.Listbox(left_list, height=15)
+        self.cat_listbox.pack(fill="y", expand=False)
+        self.cat_listbox.bind("<<ListboxSelect>>", self.on_cat_select)
+
+        cats = db_query("SELECT DISTINCT category FROM products ORDER BY category", fetch=True) or []
+        categories = [r[0] for r in cats if r[0]]
+        categories.insert(0, "All")
+        for c in categories:
+            self.cat_listbox.insert("end", c)
+        self.cat_listbox.selection_set(0)
+
+        self.tree = ttk.Treeview(middle,
+                                 columns=("id", "name", "price", "stock", "barcode"),
+                                 show="headings")
+        for col, w in (("id",60),("name",360),("price",100),("stock",80),("barcode",140)):
+            self.tree.heading(col, text=col.title())
+            self.tree.column(col, width=w, anchor="center")
+        self.tree.pack(side="left", fill="both", expand=True, padx=6)
+
+        right_controls = ttk.Frame(middle)
+        right_controls.pack(side="right", fill="y", padx=6)
+
+        ttk.Label(right_controls, text="Quantity").pack(pady=(4,0))
+        self.qty_var = tk.IntVar(value=1)
+        self.qty_spin = ttk.Spinbox(right_controls, from_=1, to=999,
+                                    textvariable=self.qty_var, width=8)
+        self.qty_spin.pack(pady=4)
+
+        ttk.Button(right_controls, text="Add to Cart",
+                   command=self.add_selected_to_cart).pack(pady=6)
+        ttk.Button(right_controls, text="Quick Scan (ID/Barcode)",
+                   command=self.quick_scan).pack(pady=6)
+        ttk.Button(right_controls, text="Refresh Products",
+                   command=self.load_all).pack(pady=6)
+
+        self.load_all()
+
+    def focus_scanner_entry(self):
+        try:
+            self.scan_entry.focus_set()
+        except Exception:
+            pass
+
+    def on_scan_enter(self, event=None):
+        code = self.scan_var.get().strip()
+        self.scan_var.set("")
+        if not code:
+            return
+        row = db_query("SELECT id, name, price, stock FROM products WHERE barcode=? COLLATE NOCASE",
+                       (code,), fetch=True)
+        if not row:
+            try:
+                pid = int(code)
+                row = db_query("SELECT id, name, price, stock FROM products WHERE id=?",
+                               (pid,), fetch=True)
+            except Exception:
+                row = None
+        if not row:
+            messagebox.showerror("Not found", f"Product with barcode/id '{code}' not found.")
+            return
+        r = row[0]
+        name, price, stock = r['name'], r['price'], r['stock']
+        qty = 1
+        if stock is not None and qty > stock:
+            messagebox.showwarning("Stock", f"Only {stock} available.")
+            return
+        self.app.add_to_cart(r['id'], name, price, qty)
+        self.scan_entry.focus_set()
+
+    def load_all(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        rows = db_query("SELECT id, name, price, stock, COALESCE(barcode,'') as barcode FROM products ORDER BY id",
+                        fetch=True) or []
+        for r in rows:
+            self.tree.insert("", "end",
+                             values=(r['id'], r['name'], f"{r['price']:.2f}",
+                                     r['stock'] if r['stock'] is not None else "",
+                                     r['barcode']))
+
+    def search(self):
+        term = self.search_var.get().strip()
+        if not term:
+            self.load_all()
+            return
+        q = """SELECT id, name, price, stock, COALESCE(barcode,'') as barcode
+               FROM products 
+               WHERE name LIKE ? OR category LIKE ? OR barcode LIKE ?
+               ORDER BY id"""
+        rows = db_query(q, (f"%{term}%", f"%{term}%", f"%{term}%"), fetch=True) or []
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in rows:
+            self.tree.insert("", "end",
+                             values=(r['id'], r['name'], f"{r['price']:.2f}",
+                                     r['stock'] if r['stock'] is not None else "",
+                                     r['barcode']))
+
+    def on_cat_select(self, event=None):
+        sel = self.cat_listbox.curselection()
+        if not sel:
+            return
+        cat = self.cat_listbox.get(sel[0])
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        if cat == "All":
+            self.load_all()
+            return
+        rows = db_query("""
+            SELECT id, name, price, stock, COALESCE(barcode,'') as barcode
+            FROM products WHERE category=? ORDER BY id
+        """, (cat,), fetch=True) or []
+        for r in rows:
+            self.tree.insert("", "end",
+                             values=(r['id'], r['name'], f"{r['price']:.2f}",
+                                     r['stock'] if r['stock'] is not None else "",
+                                     r['barcode']))
+
+    def add_selected_to_cart(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Select a product to add.")
+            return
+        vals = self.tree.item(sel[0])['values']
+        pid = int(vals[0])
+        name = vals[1]
+        price = float(vals[2])
+        stock = vals[3] if vals[3] != "" else None
+        try:
+            stock = int(stock) if stock is not None else None
+        except Exception:
+            stock = None
+        qty = int(self.qty_var.get() or 1)
+        if stock is not None and qty > stock:
+            messagebox.showwarning("Stock", f"Only {stock} available.")
+            return
+        self.app.add_to_cart(pid, name, price, qty)
+
+    def quick_scan(self):
+        pid = simpledialog.askstring("Scan", "Enter Product barcode or ID")
+        if not pid:
+            return
+        code = pid.strip()
+        self.scan_var.set(code)
+        self.on_scan_enter()
+
+class CartCheckoutFrame(ttk.Frame):
+    def __init__(self, parent, app: POSApp):
+        super().__init__(parent)
+        self.app = app
+
+        ttk.Label(self, text="Cart & Checkout", font=("Helvetica", 14, "bold")).pack(pady=6)
+
+        columns = ("product_id", "name", "qty", "price", "subtotal")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12)
+        for col, w in (("product_id",60),("name",200),("qty",60),("price",80),("subtotal",100)):
+            self.tree.heading(col, text=col.title())
+            self.tree.column(col, width=w, anchor="center")
+        self.tree.pack(padx=6, pady=4)
+
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", padx=6)
+        ttk.Button(btns, text="Remove Selected", command=self.remove_selected).pack(side="left", padx=3)
+        ttk.Button(btns, text="Clear Cart", command=self.clear_cart).pack(side="left", padx=3)
+        ttk.Button(btns, text="Edit Qty", command=self.edit_qty).pack(side="left", padx=3)
+
+        frame2 = ttk.Frame(self)
+        frame2.pack(fill="x", padx=6, pady=6)
+
+        cust_frame = ttk.Frame(frame2)
+        cust_frame.pack(fill="x", pady=3)
+        ttk.Label(cust_frame, text="Customer:").pack(side="left")
+        self.cust_var = tk.StringVar(value="Guest")
+        self.cust_label = ttk.Label(cust_frame, textvariable=self.cust_var, width=38)
+        self.cust_label.pack(side="left", padx=4)
+        ttk.Button(cust_frame, text="Select/Add", command=self.select_customer).pack(side="left", padx=4)
+
+        tot_frame = ttk.Frame(frame2)
+        tot_frame.pack(fill="x", pady=3)
+
+        ttk.Label(tot_frame, text="Discount (%)").grid(row=0, column=0, sticky="e")
+        self.disc_percent_var = tk.DoubleVar(value=0.0)
+        ttk.Entry(tot_frame, textvariable=self.disc_percent_var, width=8).grid(row=0, column=1, padx=4)
+
+        ttk.Label(tot_frame, text="Discount (Amt)").grid(row=0, column=2, sticky="e")
+        self.disc_amt_var = tk.DoubleVar(value=0.0)
+        ttk.Entry(tot_frame, textvariable=self.disc_amt_var, width=10).grid(row=0, column=3, padx=4)
+
+        ttk.Label(tot_frame, text="Payment Method").grid(row=1, column=0, sticky="e", pady=6)
+        self.pay_method_var = tk.StringVar(value="Cash")
+        self.pay_method_cb = ttk.Combobox(
+            tot_frame, textvariable=self.pay_method_var,
+            values=["Cash","Card","PayWave","Online","Bank Transfer"],
+            width=12, state="readonly"
+        )
+        self.pay_method_cb.grid(row=1, column=1, padx=4)
+        self.pay_method_cb.bind("<<ComboboxSelected>>", self.on_pay_method_change)
+
+        ttk.Label(tot_frame, text="Card Type").grid(row=1, column=2, sticky="e")
+        self.card_type_var = tk.StringVar(value="")
+        self.card_type_cb = ttk.Combobox(
+            tot_frame, textvariable=self.card_type_var,
+            values=["Visa","MasterCard","Debit Card","Credit Card"],
+            width=15, state="readonly"
+        )
+        self.card_type_cb.grid(row=1, column=3, padx=4)
+
+        if self.pay_method_var.get() != "Card":
+            self.card_type_cb.grid_remove()
+            for w in tot_frame.grid_slaves(row=1, column=2):
+                w.grid_remove()
+
+        display = ttk.Frame(self)
+        display.pack(fill="x", padx=6, pady=6)
+        self.sub_label = ttk.Label(display, text="Subtotal: $0.00")
+        self.sub_label.pack(anchor="w")
+        self.tax_label = ttk.Label(display, text=f"Tax ({TAX_RATE*100:.0f}%): $0.00")
+        self.tax_label.pack(anchor="w")
+        self.disc_label = ttk.Label(display, text="Discount: $0.00")
+        self.disc_label.pack(anchor="w")
+        self.total_label = ttk.Label(display, text="Grand Total: $0.00",
+                                     font=("Helvetica", 12, "bold"))
+        self.total_label.pack(anchor="w", pady=4)
+
+        chk_frame = ttk.Frame(self)
+        chk_frame.pack(fill="x", padx=6, pady=6)
+        ttk.Button(chk_frame, text="Recalculate", command=self.refresh_cart).pack(side="left")
+        ttk.Button(chk_frame, text="Checkout", command=self.on_checkout).pack(side="right")
+
+        self.refresh_cart()
+
+    def on_pay_method_change(self, event=None):
+        m = self.pay_method_var.get()
+        parent = self.card_type_cb.master
+        if m == "Card":
+            for w in parent.grid_slaves(row=1, column=2):
+                w.grid()
+            self.card_type_cb.grid()
+        else:
+            self.card_type_cb.grid_remove()
+            for w in parent.grid_slaves(row=1, column=2):
+                w.grid_remove()
+            self.card_type_var.set("")
+
+    def refresh_cart(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for item in self.app.cart:
+            self.tree.insert("", "end",
+                             values=(item['product_id'], item['name'], item['qty'],
+                                     f"{item['price']:.2f}", f"{item['subtotal']:.2f}"))
+        if self.app.selected_customer:
+            self.cust_var.set(f"{self.app.selected_customer[1]} (ID:{self.app.selected_customer[0]})")
+        else:
+            self.cust_var.set("Guest")
+
+        totals = self.app.compute_totals(self.disc_percent_var.get() or 0.0,
+                                         self.disc_amt_var.get() or 0.0)
+        self.sub_label.config(text=f"Subtotal: ${totals['subtotal']:.2f}")
+        self.tax_label.config(text=f"Tax ({TAX_RATE*100:.0f}%): ${totals['tax']:.2f}")
+        self.disc_label.config(text=f"Discount: ${totals['discount']:.2f}")
+        self.total_label.config(text=f"Grand Total: ${totals['grand_total']:.2f}")
+
+    def remove_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Select an item to remove.")
+            return
+        pid = int(self.tree.item(sel[0])['values'][0])
+        self.app.remove_from_cart(pid)
+        self.refresh_cart()
+
+    def clear_cart(self):
+        if not messagebox.askyesno("Confirm", "Clear cart?"):
+            return
+        self.app.clear_cart()
+        self.refresh_cart()
+
+    def edit_qty(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Select an item to edit.")
+            return
+        pid = int(self.tree.item(sel[0])['values'][0])
+        current = next((i for i in self.app.cart if i['product_id']==pid), None)
+        if not current:
+            return
+        new_qty = simpledialog.askinteger("Quantity", "Enter new quantity",
+                                          initialvalue=current['qty'], minvalue=1)
+        if new_qty is None:
+            return
+        row = db_query("SELECT stock FROM products WHERE id=?",
+                       (pid,), fetch=True)
+        stock = row[0]['stock'] if row else None
+        if stock is not None and new_qty > stock:
+            messagebox.showwarning("Stock", f"Only {stock} available.")
+            return
+        current['qty'] = new_qty
+        current['subtotal'] = current['price'] * new_qty
+        self.refresh_cart()
+
+    def select_customer(self):
+        dialog = CustomerSelector(self)
+        self.wait_window(dialog)
+        if dialog.selected_customer:
+            self.app.selected_customer = dialog.selected_customer
+        self.refresh_cart()
+
+    def on_checkout(self):
+        discount_percent = float(self.disc_percent_var.get() or 0.0)
+        discount_amount = float(self.disc_amt_var.get() or 0.0)
+        payment_method = self.pay_method_var.get() or "Cash"
+        payment_details = None
+        if payment_method == "Card":
+            payment_details = self.card_type_var.get() or "Card"
+        totals = self.app.compute_totals(discount_percent, discount_amount)
+        pm_text = payment_method + (f" ({payment_details})" if payment_details else "")
+        confirm = messagebox.askyesno("Confirm Payment",
+                                      f"Charge ${totals['grand_total']:.2f} via {pm_text}?")
+        if not confirm:
+            return
+        ok = self.app.checkout(payment_method, discount_percent, discount_amount, payment_details)
+        if ok:
+            messagebox.showinfo("Done", "Sale completed.")
+            self.refresh_cart()
+
+class CustomerSelector(tk.Toplevel):
+    def __init__(self, parent: CartCheckoutFrame):
+        super().__init__(parent)
+        self.title("Select / Add Customer")
+        self.geometry("560x420")
+        self.selected_customer = None
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=8, pady=6)
+        ttk.Label(top, text="Search by name or phone:").pack(side="left")
+        self.svar = tk.StringVar()
+        ttk.Entry(top, textvariable=self.svar, width=30).pack(side="left", padx=6)
+        ttk.Button(top, text="Search", command=self.search).pack(side="left", padx=4)
+        ttk.Button(top, text="Show All", command=self.load_all).pack(side="left", padx=4)
+
+        self.tree = ttk.Treeview(self, columns=("id","name","phone","email","points"),
+                                 show="headings", height=14)
+        for col,w in (("id",60),("name",180),("phone",120),("email",180),("points",80)):
+            self.tree.heading(col, text=col.title())
+            self.tree.column(col, width=w, anchor="center")
+        self.tree.pack(fill="both", expand=True, padx=8, pady=8)
+
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", padx=8, pady=6)
+        ttk.Button(btns, text="Select", command=self.select).pack(side="left", padx=4)
+        ttk.Button(btns, text="Add New", command=self.add_new).pack(side="left", padx=4)
+        ttk.Button(btns, text="Close", command=self.destroy).pack(side="right", padx=4)
+
+        self.load_all()
+
+    def load_all(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        rows = db_query("SELECT id,name,phone,email,loyalty_points FROM customers ORDER BY id DESC",
+                        fetch=True) or []
+        for r in rows:
+            self.tree.insert("", "end",
+                             values=(r['id'], r['name'], r['phone'] or "",
+                                     r['email'] or "", r['loyalty_points'] or 0))
+
+    def search(self):
+        t = self.svar.get().strip()
+        if not t:
+            self.load_all()
+            return
+        rows = db_query("""
+            SELECT id,name,phone,email,loyalty_points 
+            FROM customers 
+            WHERE name LIKE ? OR phone LIKE ? 
+            ORDER BY id DESC
+        """, (f"%{t}%", f"%{t}%"), fetch=True) or []
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in rows:
+            self.tree.insert("", "end",
+                             values=(r['id'], r['name'], r['phone'] or "",
+                                     r['email'] or "", r['loyalty_points'] or 0))
+
+    def select(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Select a customer.")
+            return
+        vals = self.tree.item(sel[0])['values']
+        self.selected_customer = (vals[0], vals[1])
+        self.destroy()
+
+    def add_new(self):
+        name = simpledialog.askstring("Name", "Customer name:")
+        if not name:
+            return
+        phone = simpledialog.askstring("Phone", "Phone (optional):")
+        email = simpledialog.askstring("Email", "Email (optional):")
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)",
+                    (name, phone, email))
+        conn.commit()
+        conn.close()
+        messagebox.showinfo("Added", "Customer added.")
+        self.load_all()
+
+class ProductQuickManager(tk.Toplevel):
+    def __init__(self, app: POSApp):
+        super().__init__(app)
+        self.title("Quick Product Manager")
+        self.geometry("700x460")
+        self.app = app
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=6, pady=6)
+        ttk.Label(top, text="Add New Product").pack(anchor="w")
+        form = ttk.Frame(self)
+        form.pack(fill="x", padx=6)
+
+        ttk.Label(form, text="Category").grid(row=0, column=0, sticky="e")
+        self.cat_e = ttk.Entry(form, width=30); self.cat_e.grid(row=0, column=1, padx=4, pady=3)
+        ttk.Label(form, text="Name").grid(row=1, column=0, sticky="e")
+        self.name_e = ttk.Entry(form, width=40); self.name_e.grid(row=1, column=1, padx=4, pady=3)
+        ttk.Label(form, text="Price").grid(row=2, column=0, sticky="e")
+        self.price_e = ttk.Entry(form, width=20); self.price_e.grid(row=2, column=1, padx=4, pady=3)
+        ttk.Label(form, text="Stock").grid(row=3, column=0, sticky="e")
+        self.stock_e = ttk.Entry(form, width=20); self.stock_e.grid(row=3, column=1, padx=4, pady=3)
+        ttk.Label(form, text="Barcode (optional)").grid(row=4, column=0, sticky="e")
+        self.barcode_e = ttk.Entry(form, width=30); self.barcode_e.grid(row=4, column=1, padx=4, pady=3)
+
+        ttk.Button(self, text="Add Product", command=self.add_product).pack(pady=6)
+        ttk.Button(self, text="Close", command=self.destroy).pack(pady=6)
+
+    def add_product(self):
+        cat = self.cat_e.get().strip()
+        name = self.name_e.get().strip()
+        if not name:
+            messagebox.showerror("Error", "Product name required.")
+            return
+        try:
+            price = float(self.price_e.get().strip() or 0.0)
+        except:
+            messagebox.showerror("Error", "Invalid price.")
+            return
+        try:
+            stock = int(self.stock_e.get().strip() or 0)
+        except:
+            messagebox.showerror("Error", "Invalid stock.")
+            return
+        barcode = self.barcode_e.get().strip() or None
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO products (category, name, price, stock, barcode) VALUES (?, ?, ?, ?, ?)",
+                    (cat, name, price, stock, barcode))
+        conn.commit()
+        conn.close()
+        messagebox.showinfo("Added", "Product added.")
+        self.app.product_search_frame.load_all()
+        self.destroy()
+
+# =====================================================
+# LOGIN + ROLE SELECTION + MAIN MENU
+# =====================================================
+
+def open_role_window():
+    global current_role
+    current_role = None
+    clear_root()
+    frame = tk.Frame(root, bg=BG_GRADIENT)
+    frame.pack(expand=True, fill="both")
+
+    if LOGO is not None:
+        logo_label = tk.Label(frame, image=LOGO, bg=BG_GRADIENT)
+        logo_label.pack(pady=(25, 5))
+
+    slogan = tk.Label(
+        frame,
+        text="NEXUS TECHSHOP",
+        font=("Arial", 16, "bold"),
+        fg=TEXT_LIGHT,
+        bg=BG_GRADIENT
+    )
+    slogan.pack()
+
+    subtitle = tk.Label(
+        frame,
+        text="Powering your tech universe",
+        font=("Arial", 10, "italic"),
+        fg="#b0b3b8",
+        bg=BG_GRADIENT
+    )
+    subtitle.pack(pady=(0, 25))
+
+    def hover(event, btn):
+        btn.config(bg=ACCENT_HOVER)
+
+    def leave(event, btn):
+        btn.config(bg=ACCENT)
+
+    btn_admin = tk.Button(
+        frame,
+        text="I am Admin",
+        font=("Arial", 13, "bold"),
+        bg=ACCENT,
+        fg="white",
+        width=18,
+        height=2,
+        bd=0,
+        relief="flat",
+        activebackground=ACCENT_HOVER,
+        activeforeground="white",
+        command=lambda: open_login_window("admin")
+    )
+    btn_admin.pack(pady=8)
+
+    btn_staff = tk.Button(
+        frame,
+        text="I am Staff",
+        font=("Arial", 13, "bold"),
+        bg=ACCENT,
+        fg="white",
+        width=18,
+        height=2,
+        bd=0,
+        relief="flat",
+        activebackground=ACCENT_HOVER,
+        activeforeground="white",
+        command=lambda: open_login_window("staff")
+    )
+    btn_staff.pack(pady=8)
+
+    btn_admin.bind("<Enter>", lambda e: hover(e, btn_admin))
+    btn_admin.bind("<Leave>", lambda e: leave(e, btn_admin))
+    btn_staff.bind("<Enter>", lambda e: hover(e, btn_staff))
+    btn_staff.bind("<Leave>", lambda e: leave(e, btn_staff))
+
+    footer = tk.Label(
+        frame,
+        text="Secure access portal · Nexus Techshop",
+        font=("Arial", 9, "italic"),
+        fg="#777b80",
+        bg=BG_GRADIENT
+    )
+    footer.pack(side="bottom", pady=10)
+
+def open_create_account_window(role):
+    win = tk.Toplevel(root)
+    win.title(f"Create {role.capitalize()} Account")
+    win.configure(bg=BG_GRADIENT)
+    win.geometry("330x270")
+    win.resizable(False, False)
+
+    card = tk.Frame(
+        win,
+        bg=CARD_COLOR,
+        padx=15, pady=15,
+        highlightthickness=2,
+        highlightbackground=GLOW,
+        highlightcolor=GLOW
+    )
+    card.pack(pady=20, padx=15, fill="both", expand=True)
+
+    tk.Label(
+        card,
+        text=f"New {role.capitalize()} Account",
+        font=("Arial", 14, "bold"),
+        fg=TEXT_LIGHT,
+        bg=CARD_COLOR
+    ).pack(pady=(0, 10))
+
+    tk.Label(card, text="New username:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_user = tk.Entry(card, font=("Arial", 10), width=25)
+    entry_user.pack(pady=3)
+
+    tk.Label(card, text="New password:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_pass = tk.Entry(card, font=("Arial", 10), width=25, show="*")
+    entry_pass.pack(pady=3)
+
+    tk.Label(card, text="Confirm password:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_confirm = tk.Entry(card, font=("Arial", 10), width=25, show="*")
+    entry_confirm.pack(pady=3)
+
+    lbl_msg = tk.Label(card, text="", fg="#ff6961",
+                       bg=CARD_COLOR, font=("Arial", 9, "italic"))
+    lbl_msg.pack(pady=3)
+
+    def create_account():
+        username = entry_user.get().strip()
+        password = entry_pass.get()
+        confirm = entry_confirm.get()
+
+        if not username or not password or not confirm:
+            lbl_msg.config(text="All fields are required.")
+            return
+        if username in USERS[role]:
+            lbl_msg.config(text="Username already exists.")
+            return
+        if password != confirm:
+            lbl_msg.config(text="Passwords do not match.")
+            return
+        if len(password) < 4:
+            lbl_msg.config(text="Password must be at least 4 characters.")
+            return
+
+        USERS[role][username] = password
+        messagebox.showinfo("Account created",
+                            f"New {role} account '{username}' created.")
+        win.destroy()
+
+    btn_create = tk.Button(
+        card,
+        text="Create account",
+        font=("Arial", 11, "bold"),
+        bg=ACCENT,
+        fg="white",
+        width=18,
+        bd=0,
+        relief="flat",
+        activebackground=ACCENT_HOVER,
+        activeforeground="white",
+        command=create_account
+    )
+    btn_create.pack(pady=8)
+
+def open_change_password_window(role):
+    win = tk.Toplevel(root)
+    win.title(f"Change {role.capitalize()} Password")
+    win.configure(bg=BG_GRADIENT)
+    win.geometry("330x300")
+    win.resizable(False, False)
+
+    card = tk.Frame(
+        win,
+        bg=CARD_COLOR,
+        padx=15, pady=15,
+        highlightthickness=2,
+        highlightbackground=GLOW,
+        highlightcolor=GLOW
+    )
+    card.pack(pady=20, padx=15, fill="both", expand=True)
+
+    tk.Label(
+        card,
+        text=f"Change {role.capitalize()} Password",
+        font=("Arial", 14, "bold"),
+        fg=TEXT_LIGHT,
+        bg=CARD_COLOR
+    ).pack(pady=(0, 10))
+
+    tk.Label(card, text="Username:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_user = tk.Entry(card, font=("Arial", 10), width=25)
+    entry_user.pack(pady=3)
+
+    tk.Label(card, text="Current password:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_old = tk.Entry(card, font=("Arial", 10), width=25, show="*")
+    entry_old.pack(pady=3)
+
+    tk.Label(card, text="New password:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_new = tk.Entry(card, font=("Arial", 10), width=25, show="*")
+    entry_new.pack(pady=3)
+
+    tk.Label(card, text="Confirm new password:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
+    entry_confirm = tk.Entry(card, font=("Arial", 10), width=25, show="*")
+    entry_confirm.pack(pady=3)
+
+    lbl_msg = tk.Label(card, text="", fg="#ff6961",
+                       bg=CARD_COLOR, font=("Arial", 9, "italic"))
+    lbl_msg.pack(pady=3)
+
+    def change_password():
+        username = entry_user.get().strip()
+        old = entry_old.get()
+        new = entry_new.get()
+        confirm = entry_confirm.get()
+
+        if not username or not old or not new or not confirm:
+            lbl_msg.config(text="All fields are required.")
+            return
+
+        if username not in USERS[role]:
+            lbl_msg.config(text="User not found.")
+            return
+
+        if USERS[role][username] != old:
+            lbl_msg.config(text="Current password is incorrect.")
+            return
+
+        if new != confirm:
+            lbl_msg.config(text="New passwords do not match.")
+            return
+
+        if len(new) < 4:
+            lbl_msg.config(text="New password must be at least 4 characters.")
+            return
+
+        USERS[role][username] = new
+        messagebox.showinfo("Password changed", "Password updated successfully.")
+        win.destroy()
+
+    btn_change = tk.Button(
+        card,
+        text="Change password",
+        font=("Arial", 11, "bold"),
+        bg=ACCENT,
+        fg="white",
+        width=18,
+        bd=0,
+        relief="flat",
+        activebackground=ACCENT_HOVER,
+        activeforeground="white",
+        command=change_password
+    )
+    btn_change.pack(pady=8)
+
+def open_login_window(role):
+    global current_role
+    current_role = role
+    clear_root()
+
+    frame = tk.Frame(root, bg=BG_GRADIENT)
+    frame.pack(expand=True, fill="both")
+
+    if LOGO is not None:
+        logo_label = tk.Label(frame, image=LOGO, bg=BG_GRADIENT)
+        logo_label.pack(pady=(20, 5))
+
+    tk.Label(
+        frame,
+        text="NEXUS TECHSHOP",
+        font=("Arial", 14, "bold"),
+        fg=TEXT_LIGHT,
+        bg=BG_GRADIENT
+    ).pack()
+
+    tk.Label(
+        frame,
+        text=f"{role.capitalize()} login",
+        font=("Arial", 10, "italic"),
+        fg="#b0b3b8",
+        bg=BG_GRADIENT
+    ).pack(pady=(0, 10))
+
+    card = tk.Frame(
+        frame,
+        bg=CARD_COLOR,
+        padx=20, pady=20,
+        highlightthickness=2,
+        highlightbackground=GLOW,
+        highlightcolor=GLOW
+    )
+    card.pack(pady=10)
+
+    tk.Label(
+        card,
+        text=f"{role.upper()} LOGIN",
+        font=("Arial", 16, "bold"),
+        fg=TEXT_LIGHT,
+        bg=CARD_COLOR
+    ).pack(pady=(0, 10))
+
+    tk.Label(card, text="Username:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 11)).pack(anchor="w")
+    entry_user = tk.Entry(card, font=("Arial", 11), width=25)
+    entry_user.pack(pady=4)
+
+    tk.Label(card, text="Password:", fg=TEXT_LIGHT,
+             bg=CARD_COLOR, font=("Arial", 11)).pack(anchor="w")
+    entry_pass = tk.Entry(card, font=("Arial", 11), width=25, show="*")
+    entry_pass.pack(pady=4)
+
+    show_var = tk.BooleanVar(value=False)
+
+    def toggle_password():
+        entry_pass.config(show="" if show_var.get() else "*")
+
+    chk_show = tk.Checkbutton(
+        card,
+        text="Show password",
+        variable=show_var,
+        command=toggle_password,
+        bg=CARD_COLOR,
+        fg="#b0b3b8",
+        activebackground=CARD_COLOR,
+        activeforeground="#b0b3b8",
+        selectcolor=CARD_COLOR,
+        font=("Arial", 9)
+    )
+    chk_show.pack(anchor="w", pady=(0, 4))
+
+    lbl_error = tk.Label(
+        card,
+        text="",
+        fg="#ff6961",
+        bg=CARD_COLOR,
+        font=("Arial", 9, "italic")
+    )
+    lbl_error.pack(pady=(0, 4))
+
+    def do_login():
+        username = entry_user.get().strip()
+        password = entry_pass.get()
+        lbl_error.config(text="")
+
+        if username in USERS[role] and USERS[role][username] == password:
+            open_main_menu()
+        else:
+            lbl_error.config(text="Incorrect username or password.")
+
+    btn_login = tk.Button(
+        card,
+        text="Login",
+        font=("Arial", 12, "bold"),
+        bg=ACCENT,
+        fg="white",
+        width=20,
+        bd=0,
+        relief="flat",
+        activebackground=ACCENT_HOVER,
+        activeforeground="white",
+        command=do_login
+    )
+    btn_login.pack(pady=6)
+
+    btn_forgot = tk.Button(
+        card,
+        text="Forgot username/password?",
+        font=("Arial", 9, "underline"),
+        bg=CARD_COLOR,
+        fg="#9aa0a6",
+        bd=0,
+        activebackground=CARD_COLOR,
+        activeforeground="white",
+        cursor="hand2",
+        command=lambda: messagebox.showinfo(
+            "Recover Account",
+            "Please contact Nexus admin to reset your login details."
+        )
+    )
+    btn_forgot.pack(pady=(0, 4))
+
+    links = tk.Frame(card, bg=CARD_COLOR)
+    links.pack(pady=2)
+    btn_create = tk.Button(
+        links,
+        text="Create account",
+        font=("Arial", 9),
+        bg=CARD_COLOR,
+        fg="#9aa0a6",
+        bd=0,
+        activebackground=CARD_COLOR,
+        activeforeground="white",
+        cursor="hand2",
+        command=lambda: open_create_account_window(role)
+    )
+    btn_create.grid(row=0, column=0, padx=5)
+    btn_change = tk.Button(
+        links,
+        text="Change password",
+        font=("Arial", 9),
+        bg=CARD_COLOR,
+        fg="#9aa0a6",
+        bd=0,
+        activebackground=CARD_COLOR,
+        activeforeground="white",
+        cursor="hand2",
+        command=lambda: open_change_password_window(role)
+    )
+    btn_change.grid(row=0, column=1, padx=5)
+
+    btn_back = tk.Button(
+        frame,
+        text="← Back to role select",
+        font=("Arial", 10),
+        bg=ACCENT,
+        fg="white",
+        width=20,
+        bd=0,
+        relief="flat",
+        activebackground=ACCENT_HOVER,
+        activeforeground="white",
+        command=open_role_window
+    )
+    btn_back.pack(pady=10)
+
+# =====================================================
+# MAIN MENU AFTER LOGIN
+# =====================================================
+def open_main_menu():
+    clear_root()
+    frame = tk.Frame(root, bg=BG_GRADIENT)
+    frame.pack(expand=True, fill="both")
+
+    if LOGO is not None:
+        logo_label = tk.Label(frame, image=LOGO, bg=BG_GRADIENT)
+        logo_label.pack(pady=(25, 5))
+
+    title = tk.Label(
+        frame,
+        text="NEXUS TECHSHOP – Dashboard",
+        font=("Arial", 18, "bold"),
+        fg=TEXT_LIGHT,
+        bg=BG_GRADIENT
+    )
+    title.pack(pady=(0, 10))
+
+    subtitle = tk.Label(
+        frame,
+        text=f"Logged in as: {current_role.upper()}",
+        font=("Arial", 11),
+        fg="#b0b3b8",
+        bg=BG_GRADIENT
+    )
+    subtitle.pack(pady=(0, 20))
+
+    btn_frame = tk.Frame(frame, bg=BG_GRADIENT)
+    btn_frame.pack()
+
+    def make_menu_button(text, cmd):
+        b = tk.Button(
+            btn_frame,
+            text=text,
+            font=("Arial", 13, "bold"),
+            bg=ACCENT,
+            fg="white",
+            width=24,
+            height=2,
+            bd=0,
+            relief="flat",
+            activebackground=ACCENT_HOVER,
+            activeforeground="white",
+            command=cmd
+        )
+        b.pack(pady=8)
+        return b
+
+    btn_pos = make_menu_button("Open POS Billing System",
+                               lambda: show_pos_page())
+    btn_customers = make_menu_button("Customer Management (MySQL)",
+                                     lambda: show_customer_page())
+    btn_reports = make_menu_button("Sales Reports Dashboard",
+                                   lambda: show_reports_page())
+
+    def hover(e, btn):
+        btn.config(bg=ACCENT_HOVER)
+    def leave(e, btn):
+        btn.config(bg=ACCENT)
+
+    for b in (btn_pos, btn_customers, btn_reports):
+        b.bind("<Enter>", lambda e, bb=b: hover(e, bb))
+        b.bind("<Leave>", lambda e, bb=b: leave(e, bb))
+
+    tk.Button(
+        frame,
+        text="Logout",
+        font=("Arial", 10),
+        bg="#444",
+        fg="white",
+        width=14,
+        bd=0,
+        relief="flat",
+        activebackground="#666",
+        activeforeground="white",
+        command=open_role_window
+    ).pack(pady=20)
+
+def show_pos_page():
+    clear_root()
+    POSApp(root)
+
+def show_reports_page():
+    clear_root()
+    ReportPage(root)
+
+def show_customer_page():
+    clear_root()
+    CustomerManagementPage(root)
+
+# =====================================================
+# SPLASH SCREEN
+# =====================================================
+def splash_screen():
+    splash = tk.Toplevel()
+    splash.title("Nexus Loading")
+    splash.geometry("360x260")
+    splash.overrideredirect(True)
+    splash.configure(bg=BG_GRADIENT)
+
+    splash.update_idletasks()
+    w = splash.winfo_width()
+    h = splash.winfo_height()
+    ws = splash.winfo_screenwidth()
+    hs = splash.winfo_screenheight()
+    x = (ws // 2) - (w // 2)
+    y = (hs // 2) - (h // 2)
+    splash.geometry(f"+{x}+{y}")
+
+    if LOGO is not None:
+        logo_label = tk.Label(splash, image=LOGO, bg=BG_GRADIENT)
+        logo_label.pack(pady=(30, 10))
+
+    title = tk.Label(
+        splash,
+        text="NEXUS TECHSHOP",
+        font=("Arial", 16, "bold"),
+        fg=TEXT_LIGHT,
+        bg=BG_GRADIENT
+    )
+    title.pack()
+
+    slogan = tk.Label(
+        splash,
+        text="Powering your tech universe",
+        font=("Arial", 10, "italic"),
+        fg="#b0b3b8",
+        bg=BG_GRADIENT
+    )
+    slogan.pack(pady=(0, 15))
+
+    loading = tk.Label(
+        splash,
+        text="Loading Nexus system...",
+        font=("Arial", 10),
+        fg="#b0b3b8",
+        bg=BG_GRADIENT
+    )
+    loading.pack()
+
+    root.after(1800, lambda: (splash.destroy(), open_role_window()))
+
+# =====================================================
+# MAIN ENTRY POINT
+# =====================================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("Nexus Techshop Login")
+    root.geometry("430x520")
+    root.resizable(False, False)
+    root.configure(bg=BG_GRADIENT)
+
+    load_logo()
+    splash_screen()
+    root.mainloop()
