@@ -31,6 +31,7 @@ def load_logo():
 
 
 #Page 1:
+    def open_role_window():
     global current_role
     current_role = None
 
