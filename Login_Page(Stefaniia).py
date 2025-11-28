@@ -12,7 +12,7 @@ GLOW = "#4b39bb"              # цвет рамки вокруг карточе�
 # Login Passwords 
 USERS = {
     "admin": {"admin": "1234"},
-    "staff": {"staff":5678}
+    "staff": {"staff": "5678"}
 }
 current_role = None
 LOGO = None   # сюда загрузим картинку после создания root
@@ -20,7 +20,7 @@ LOGO = None   # сюда загрузим картинку после созда
 def load_logo():
     global LOGO
     try:
-        LOGO = tk.PhotoImage(file="nexus_logo.png")
+        LOGO = tk.PhotoImage(file="nex")
     except Exception:
         LOGO = None
 #Page 1:
