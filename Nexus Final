@@ -1,0 +1,1143 @@
+"""
+Nexus Tech POS System - MySQL
+SOFT605 Assignment
+
+Default login:
+    username: admin
+    password: admin123
+"""
+
+import os
+from datetime import datetime
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, filedialog
+
+import mysql.connector
+
+# Optional: product images (Pillow)
+try:
+    from PIL import Image, ImageTk   # pip install pillow
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+# ---------- EDIT THIS WITH YOUR REAL DB INFO ----------
+MYSQL_CONFIG = {
+    "host": "localhost",
+    "user": "root",          #MySQL username
+    "password": "jyGYdt8adnoa8w6r9q0phdisy-(fgix",          #MySQL password
+    "database": "Nexus" #MySQL database name
+}
+# ------------------------------------------------------
+
+ASSETS_DIR = "assets"      # folder for product images (optional)
+RECEIPTS_DIR = "receipts"  # folder to save text bills
+
+
+# ==========================
+# Database (MySQL)
+# ==========================
+class Database:
+    def __init__(self):
+        self.conn = mysql.connector.connect(**MYSQL_CONFIG)
+        self.init_db()
+
+    def cursor(self):
+        """Return a dictionary cursor (rows as dicts)."""
+        return self.conn.cursor(dictionary=True)
+
+    def init_db(self):
+        """
+        Ensures tables exist (IF NOT EXISTS) using your schema
+        and that there is at least one admin user.
+        """
+        cur = self.cursor()
+
+        # ---- Tables (Schema) ----
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) NOT NULL UNIQUE,
+            password VARCHAR(255) NOT NULL,
+            role VARCHAR(50) NOT NULL
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            price DECIMAL(10,2) NOT NULL,
+            stock INT NOT NULL,
+            image_path VARCHAR(255)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            phone VARCHAR(50),
+            email VARCHAR(255),
+            type VARCHAR(50) DEFAULT 'Standard',
+            points INT DEFAULT 0
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            customer_id INT,
+            staff_username VARCHAR(255),
+            total DECIMAL(10,2) NOT NULL,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL,
+            product_id INT NOT NULL,
+            quantity INT NOT NULL,
+            price_at_sale DECIMAL(10,2) NOT NULL,
+            FOREIGN KEY(order_id) REFERENCES orders(id),
+            FOREIGN KEY(product_id) REFERENCES products(id)
+        )
+        """)
+
+        self.conn.commit()
+
+        # ---- Ensure one admin user ----
+        cur.execute("SELECT COUNT(*) AS c FROM users")
+        row = cur.fetchone()
+        if row and row["c"] == 0:
+            cur.execute(
+                "INSERT INTO users (username, password, role) VALUES (%s,%s,%s)",
+                ("admin", "admin123", "admin")
+            )
+            self.conn.commit()
+
+    # ---------- Users ----------
+    def get_user(self, username, password):
+        cur = self.cursor()
+        cur.execute(
+            "SELECT * FROM users WHERE username=%s AND password=%s",
+            (username, password)
+        )
+        return cur.fetchone()
+
+    # ---------- Products ----------
+    def get_products(self):
+        cur = self.cursor()
+        cur.execute("SELECT * FROM products ORDER BY id")
+        return cur.fetchall()
+
+    def add_product(self, name, price, stock, image_path=None):
+        cur = self.cursor()
+        cur.execute(
+            "INSERT INTO products (name, price, stock, image_path) VALUES (%s,%s,%s,%s)",
+            (name, price, stock, image_path)
+        )
+        self.conn.commit()
+
+    def delete_product(self, product_id):
+        cur = self.cursor()
+        cur.execute("DELETE FROM products WHERE id=%s", (product_id,))
+        self.conn.commit()
+
+    def update_product_stock(self, product_id, new_stock):
+        cur = self.cursor()
+        cur.execute("UPDATE products SET stock=%s WHERE id=%s",
+                    (new_stock, product_id))
+        self.conn.commit()
+
+    # ---------- Customers ----------
+    def get_customers(self):
+        cur = self.cursor()
+        cur.execute("SELECT * FROM customers ORDER BY id")
+        return cur.fetchall()
+
+    def add_customer(self, name, phone, email, type_="Standard"):
+        cur = self.cursor()
+        cur.execute(
+            "INSERT INTO customers (name, phone, email, type) VALUES (%s,%s,%s,%s)",
+            (name, phone, email, type_)
+        )
+        self.conn.commit()
+
+    def get_customer_by_id(self, customer_id):
+        if customer_id is None:
+            return None
+        cur = self.cursor()
+        cur.execute("SELECT * FROM customers WHERE id=%s", (customer_id,))
+        return cur.fetchone()
+
+    # ---------- Orders ----------
+    def create_order(self, customer_id, staff_username, items):
+        """
+        items: list of dicts:
+            {'product_id': int, 'qty': int, 'price': float}
+        """
+        cur = self.cursor()
+        total = sum(i["qty"] * i["price"] for i in items)
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cur.execute(
+            "INSERT INTO orders (customer_id, staff_username, total, created_at) "
+            "VALUES (%s,%s,%s,%s)",
+            (customer_id, staff_username, total, created_at)
+        )
+        order_id = cur.lastrowid
+
+        # Insert order items + reduce stock
+        for i in items:
+            cur.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_sale) "
+                "VALUES (%s,%s,%s,%s)",
+                (order_id, i["product_id"], i["qty"], i["price"])
+            )
+
+            cur.execute("SELECT stock FROM products WHERE id=%s",
+                        (i["product_id"],))
+            row = cur.fetchone()
+            if row is not None:
+                new_stock = row["stock"] - i["qty"]
+                self.update_product_stock(i["product_id"], new_stock)
+
+        self.conn.commit()
+        return order_id, float(total), created_at
+
+    def get_orders(self):
+        cur = self.cursor()
+        cur.execute("""
+        SELECT o.id, o.created_at, o.total,
+               COALESCE(c.name, 'Walk-in') AS customer_name,
+               o.staff_username,
+               o.customer_id
+        FROM orders o
+        LEFT JOIN customers c ON o.customer_id = c.id
+        ORDER BY o.id DESC
+        """)
+        return cur.fetchall()
+
+    def get_order(self, order_id):
+        cur = self.cursor()
+        cur.execute("""
+        SELECT o.*, COALESCE(c.name, 'Walk-in') AS customer_name
+        FROM orders o
+        LEFT JOIN customers c ON o.customer_id = c.id
+        WHERE o.id=%s
+        """, (order_id,))
+        return cur.fetchone()
+
+    def get_order_items(self, order_id):
+        cur = self.cursor()
+        cur.execute("""
+        SELECT oi.*, p.name AS product_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        WHERE oi.order_id=%s
+        """, (order_id,))
+        return cur.fetchall()
+
+
+# ==========================
+# Main Application
+# ==========================
+class POSApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Nexus Tech POS System")
+        self.geometry("1100x650")
+        self.minsize(900, 600)
+
+        self.db = Database()
+        self.current_user = None
+        self.cart = []  # list of dicts: id, name, price, qty
+
+        # Styling
+        self.style = ttk.Style(self)
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        self.style.configure("TButton", padding=6, font=("Segoe UI", 10))
+        self.style.configure("Header.TLabel", font=("Segoe UI", 18, "bold"))
+        self.style.configure("SubHeader.TLabel", font=("Segoe UI", 14, "bold"))
+
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True)
+
+        self.frames = {}
+        for F in (LoginFrame, DashboardFrame, StoreFrame,
+                  ProductManagementFrame, CustomerManagementFrame,
+                  OrderHistoryFrame, CheckoutFrame):
+            frame = F(parent=container, controller=self)
+            self.frames[F.__name__] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
+
+        self.show_frame("LoginFrame")
+
+    def show_frame(self, name):
+        frame = self.frames[name]
+        if hasattr(frame, "refresh"):
+            frame.refresh()
+        frame.tkraise()
+
+    # ----- cart helpers -----
+    def add_to_cart(self, product_row):
+        if product_row["stock"] <= 0:
+            messagebox.showerror("Out of stock", "This product is out of stock.")
+            return
+
+        for item in self.cart:
+            if item["id"] == product_row["id"]:
+                if item["qty"] >= product_row["stock"]:
+                    messagebox.showwarning(
+                        "Stock limit",
+                        "Cannot add more, stock limit reached."
+                    )
+                    return
+                item["qty"] += 1
+                break
+        else:
+            self.cart.append({
+                "id": product_row["id"],
+                "name": product_row["name"],
+                "price": float(product_row["price"]),
+                "qty": 1
+            })
+        messagebox.showinfo("Cart", f"Added {product_row['name']} to cart.")
+
+    def clear_cart(self):
+        self.cart = []
+
+
+# ==========================
+# Frames (Screens)
+# ==========================
+class LoginFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+
+        card = ttk.Frame(self, padding=40, relief="ridge")
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        ttk.Label(card, text="Nexus Tech Login", style="Header.TLabel").grid(
+            row=0, column=0, columnspan=2, pady=(0, 20)
+        )
+
+        ttk.Label(card, text="Username:").grid(row=1, column=0, sticky="e", pady=5)
+        ttk.Label(card, text="Password:").grid(row=2, column=0, sticky="e", pady=5)
+
+        self.username_var = tk.StringVar()
+        self.password_var = tk.StringVar()
+
+        ttk.Entry(card, textvariable=self.username_var, width=25).grid(row=1, column=1, pady=5)
+        ttk.Entry(card, textvariable=self.password_var, width=25, show="*").grid(row=2, column=1, pady=5)
+
+        ttk.Button(card, text="Login", command=self.login).grid(
+            row=3, column=0, columnspan=2, pady=15, sticky="ew"
+        )
+
+    def login(self):
+        u = self.username_var.get().strip()
+        p = self.password_var.get().strip()
+        if not u or not p:
+            messagebox.showerror("Error", "Please enter username and password.")
+            return
+        row = self.controller.db.get_user(u, p)
+        if row:
+            self.controller.current_user = row
+            self.controller.show_frame("DashboardFrame")
+        else:
+            messagebox.showerror("Login failed", "Invalid username or password.")
+
+
+class DashboardFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+
+        card = ttk.Frame(self, padding=30, relief="ridge")
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        ttk.Label(card, text="Nexus Tech Admin Dashboard", style="Header.TLabel").grid(
+            row=0, column=0, pady=(0, 20)
+        )
+
+        ttk.Button(card, text="Enter Store (POS Mode)",
+                   command=lambda: controller.show_frame("StoreFrame"),
+                   width=30).grid(row=1, column=0, pady=5)
+
+        ttk.Button(card, text="Manage Products",
+                   command=lambda: controller.show_frame("ProductManagementFrame"),
+                   width=30).grid(row=2, column=0, pady=5)
+
+        ttk.Button(card, text="Manage Customers",
+                   command=lambda: controller.show_frame("CustomerManagementFrame"),
+                   width=30).grid(row=3, column=0, pady=5)
+
+        ttk.Button(card, text="Order History / Reports",
+                   command=lambda: controller.show_frame("OrderHistoryFrame"),
+                   width=30).grid(row=4, column=0, pady=5)
+
+        ttk.Button(card, text="Logout",
+                   command=self.logout,
+                   width=30).grid(row=5, column=0, pady=(20, 0))
+
+    def refresh(self):
+        pass
+
+    def logout(self):
+        self.controller.current_user = None
+        self.controller.clear_cart()
+        self.controller.show_frame("LoginFrame")
+
+
+# -------- Tech-style Store (cards grid) --------
+class StoreFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+        self.image_cache = {}
+        self.search_var = tk.StringVar()
+
+        # ====== TECH HEADER BAR ======
+        header = tk.Frame(self, bg="#121212", height=60)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        logo = tk.Label(
+            header,
+            text="Nexus Tech Store",
+            bg="#121212",
+            fg="#00e5ff",
+            font=("Segoe UI", 18, "bold")
+        )
+        logo.pack(side="left", padx=15)
+
+        # Search bar
+        search_entry = tk.Entry(
+            header,
+            textvariable=self.search_var,
+            width=40,
+            font=("Segoe UI", 11),
+            bg="#1e1e1e",
+            fg="white",
+            insertbackground="white",
+            relief="flat"
+        )
+        search_entry.pack(side="left", padx=(20, 0), ipady=4)
+
+        search_btn = tk.Button(
+            header,
+            text="Search",
+            bg="#00e5ff",
+            fg="#000000",
+            bd=0,
+            padx=12,
+            pady=4,
+            command=self.refresh
+        )
+        search_btn.pack(side="left", padx=8)
+
+        clear_btn = tk.Button(
+            header,
+            text="Clear",
+            bg="#333333",
+            fg="white",
+            bd=0,
+            padx=8,
+            pady=4,
+            command=self.clear_search
+        )
+        clear_btn.pack(side="left")
+
+        spacer = tk.Frame(header, bg="#121212")
+        spacer.pack(side="left", expand=True, fill="x")
+
+        self.user_label = tk.Label(
+            header,
+            text="",
+            bg="#121212",
+            fg="#bbbbbb",
+            font=("Segoe UI", 9)
+        )
+        self.user_label.pack(side="right", padx=10)
+
+        cart_btn = tk.Button(
+            header,
+            text="Cart",
+            bg="#1e1e1e",
+            fg="#00e5ff",
+            bd=0,
+            padx=10,
+            command=self.open_cart
+        )
+        cart_btn.pack(side="right", padx=5)
+
+        admin_btn = tk.Button(
+            header,
+            text="Admin",
+            bg="#1e1e1e",
+            fg="#00e5ff",
+            bd=0,
+            padx=10,
+            command=lambda: controller.show_frame("DashboardFrame")
+        )
+        admin_btn.pack(side="right")
+
+        # ====== MAIN PRODUCT AREA ======
+        outer = ttk.Frame(self)
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.canvas = tk.Canvas(outer, bg="#181818", highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(
+            outer, orient="vertical", command=self.canvas.yview
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.products_frame = ttk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.products_frame, anchor="nw")
+
+        self.products_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+
+    def clear_search(self):
+        self.search_var.set("")
+        self.refresh()
+
+    def open_cart(self):
+        self.controller.show_frame("CheckoutFrame")
+
+    def refresh(self):
+        # logged-in label
+        if self.controller.current_user:
+            self.user_label.config(
+                text=f"{self.controller.current_user['username']} ({self.controller.current_user['role']})"
+            )
+
+        # clear old cards
+        for child in self.products_frame.winfo_children():
+            child.destroy()
+        self.image_cache.clear()
+
+        # get products & filter
+        all_products = self.controller.db.get_products()
+        q = self.search_var.get().strip().lower()
+        if q:
+            products = [p for p in all_products if q in p["name"].lower()]
+        else:
+            products = all_products
+
+        if not products:
+            ttk.Label(self.products_frame, text="No products found.").grid(
+                row=0, column=0, padx=10, pady=10
+            )
+            return
+
+        columns = 4  # number of cards per row
+        for index, p in enumerate(products):
+            row = index // columns
+            col = index % columns
+
+            card = ttk.Frame(self.products_frame, padding=10, relief="ridge")
+            card.grid(row=row, column=col, padx=10, pady=10, sticky="n")
+
+            # image area
+            img_label = ttk.Label(card)
+            img_label.pack()
+            photo = self.load_product_image(p["image_path"], size=(150, 150))
+            if photo:
+                img_label.configure(image=photo)
+                self.image_cache[p["id"]] = photo
+
+            # name
+            ttk.Label(
+                card,
+                text=p["name"],
+                font=("Segoe UI", 10, "bold"),
+                wraplength=200,
+            ).pack(pady=(8, 0))
+
+            # price + stock
+            ttk.Label(
+                card,
+                text=f"${float(p['price']):.2f}",
+                foreground="#00bfa5",
+                font=("Segoe UI", 11, "bold"),
+            ).pack()
+            ttk.Label(
+                card, text=f"{p['stock']} in stock", font=("Segoe UI", 9)
+            ).pack(pady=(0, 5))
+
+            ttk.Button(
+                card,
+                text="Add to Cart",
+                command=lambda pr=p: self.controller.add_to_cart(pr),
+            ).pack(fill="x", pady=(5, 0))
+
+        self.canvas.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def load_product_image(self, filename, size=(150, 150)):
+        # If Pillow not available, just return None and show no image
+        if not PIL_AVAILABLE:
+            return None
+
+        try:
+            if filename:
+                path = os.path.join(ASSETS_DIR, filename)
+            else:
+                path = None
+
+            if path and os.path.exists(path):
+                img = Image.open(path)
+            else:
+                # grey placeholder if file missing
+                img = Image.new("RGB", size, color=(60, 60, 60))
+
+            img = img.resize(size, Image.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception as e:
+            print("Error loading image:", e)
+            img = Image.new("RGB", size, color=(60, 60, 60))
+            return ImageTk.PhotoImage(img)
+
+
+class CheckoutFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+        self.selected_customer_id = None
+
+        header = ttk.Frame(self)
+        header.pack(fill="x", pady=5)
+        ttk.Label(header, text="Checkout & Payment", style="SubHeader.TLabel").pack(
+            side="left", padx=10
+        )
+        ttk.Button(
+            header,
+            text="Back to Store",
+            command=lambda: controller.show_frame("StoreFrame"),
+        ).pack(side="right", padx=10)
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Cart
+        cart_frame = ttk.LabelFrame(body, text="Cart")
+        cart_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        self.cart_tree = ttk.Treeview(
+            cart_frame,
+            columns=("price", "qty", "sub"),
+            show="headings",
+            height=15,
+        )
+        self.cart_tree.heading("price", text="Price")
+        self.cart_tree.heading("qty", text="Qty")
+        self.cart_tree.heading("sub", text="Subtotal")
+        self.cart_tree.column("price", width=80, anchor="e")
+        self.cart_tree.column("qty", width=60, anchor="center")
+        self.cart_tree.column("sub", width=100, anchor="e")
+        self.cart_tree.pack(fill="both", expand=True, pady=5)
+
+        ttk.Button(cart_frame, text="Remove Selected",
+                   command=self.remove_selected).pack(pady=5)
+
+        self.total_label = ttk.Label(
+            cart_frame, text="Total: $0.00", font=("Segoe UI", 12, "bold")
+        )
+        self.total_label.pack(pady=5)
+
+        # Customer + payment
+        right = ttk.LabelFrame(body, text="Customer & Payment")
+        right.pack(side="right", fill="y", padx=(5, 0))
+
+        ttk.Button(
+            right, text="Select Existing Customer", command=self.select_customer
+        ).pack(pady=5, fill="x")
+        ttk.Button(right, text="Register New Customer",
+                   command=self.add_customer).pack(pady=5, fill="x")
+
+        self.selected_customer_label = ttk.Label(right, text="Customer: Walk-in")
+        self.selected_customer_label.pack(pady=5)
+
+        ttk.Label(right, text="Payment Method:").pack(pady=(10, 0))
+        self.pay_method_var = tk.StringVar(value="Cash")
+        ttk.Combobox(
+            right,
+            textvariable=self.pay_method_var,
+            values=["Cash", "Credit Card", "EFTPOS"],
+            state="readonly",
+        ).pack(pady=5, fill="x")
+
+        ttk.Button(right, text="Confirm & Pay",
+                   command=self.confirm_pay).pack(
+            pady=(20, 5), fill="x"
+        )
+
+        ttk.Button(
+            right,
+            text="Back to Dashboard",
+            command=lambda: controller.show_frame("DashboardFrame"),
+        ).pack(pady=5, fill="x")
+
+    def refresh(self):
+        for row in self.cart_tree.get_children():
+            self.cart_tree.delete(row)
+
+        total = 0
+        for item in self.controller.cart:
+            sub = item["price"] * item["qty"]
+            total += sub
+            self.cart_tree.insert(
+                "",
+                "end",
+                iid=item["id"],
+                values=(f"{item['price']:.2f}", item["qty"], f"{sub:.2f}"),
+            )
+
+        self.total_label.config(text=f"Total: ${total:.2f}")
+
+    def remove_selected(self):
+        sel = self.cart_tree.focus()
+        if not sel:
+            return
+        pid = int(sel)
+        self.controller.cart = [i for i in self.controller.cart if i["id"] != pid]
+        self.refresh()
+
+    def select_customer(self):
+        customers = self.controller.db.get_customers()
+        if not customers:
+            messagebox.showinfo("Customers", "No customers yet. Please register one.")
+            return
+
+        lines = [f"{c['id']}: {c['name']} ({c['type']})" for c in customers]
+        s = simpledialog.askstring(
+            "Select Customer",
+            "Type customer ID from list:\n" + "\n".join(lines),
+            parent=self,
+        )
+        if not s:
+            return
+        try:
+            cid = int(s)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid ID.")
+            return
+
+        for c in customers:
+            if c["id"] == cid:
+                self.selected_customer_id = cid
+                self.selected_customer_label.config(
+                    text=f"Customer: {c['name']} ({c['type']})"
+                )
+                return
+        messagebox.showerror("Error", "Customer not found.")
+
+    def add_customer(self):
+        name = simpledialog.askstring("New Customer", "Name:", parent=self)
+        if not name:
+            return
+        phone = simpledialog.askstring("New Customer", "Phone:", parent=self)
+        email = simpledialog.askstring("New Customer", "Email:", parent=self)
+        type_ = simpledialog.askstring(
+            "New Customer", "Type (Standard/VIP/Student):", parent=self
+        ) or "Standard"
+        self.controller.db.add_customer(name, phone, email, type_)
+        messagebox.showinfo("Customer", "Customer added.")
+        self.selected_customer_label.config(text=f"Customer: {name} ({type_})")
+
+    def confirm_pay(self):
+        if not self.controller.cart:
+            messagebox.showerror("Error", "Cart is empty.")
+            return
+        if not self.controller.current_user:
+            messagebox.showerror("Error", "No logged-in user.")
+            return
+
+        products = {p["id"]: p for p in self.controller.db.get_products()}
+        items = []
+        for item in self.controller.cart:
+            p = products[item["id"]]
+            if item["qty"] > p["stock"]:
+                messagebox.showerror(
+                    "Stock error",
+                    f"Not enough stock for {p['name']} (available {p['stock']}).",
+                )
+                return
+            items.append(
+                {
+                    "product_id": item["id"],
+                    "qty": item["qty"],
+                    "price": item["price"],
+                }
+            )
+
+        order_id, total, created_at = self.controller.db.create_order(
+            self.selected_customer_id,
+            self.controller.current_user["username"],
+            items,
+        )
+
+        # show receipt window
+        ReceiptWindow(self.controller, order_id)
+
+        self.controller.clear_cart()
+        self.refresh()
+        self.selected_customer_id = None
+        self.selected_customer_label.config(text="Customer: Walk-in")
+        self.controller.show_frame("StoreFrame")
+
+
+class ProductManagementFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+
+        header = ttk.Frame(self)
+        header.pack(fill="x", pady=5)
+        ttk.Label(header, text="Product Management", style="SubHeader.TLabel").pack(
+            side="left", padx=10
+        )
+        ttk.Button(
+            header,
+            text="Back to Dashboard",
+            command=lambda: controller.show_frame("DashboardFrame"),
+        ).pack(side="right", padx=10)
+
+        btn_bar = ttk.Frame(self)
+        btn_bar.pack(fill="x", pady=5)
+        ttk.Button(btn_bar, text="Add Product",
+                   command=self.add_product).pack(side="left", padx=5)
+        ttk.Button(btn_bar, text="Delete Selected",
+                   command=self.delete_product).pack(side="left", padx=5)
+
+        self.tree = ttk.Treeview(
+            self, columns=("name", "price", "stock", "image"), show="headings"
+        )
+        for col, txt in zip(
+            ("name", "price", "stock", "image"),
+            ("Name", "Price", "Stock", "Image Path"),
+        ):
+            self.tree.heading(col, text=txt)
+
+        self.tree.column("name", width=250)
+        self.tree.column("price", width=80, anchor="e")
+        self.tree.column("stock", width=80, anchor="center")
+        self.tree.column("image", width=200)
+
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def refresh(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for p in self.controller.db.get_products():
+            self.tree.insert(
+                "",
+                "end",
+                iid=p["id"],
+                values=(
+                    p["name"],
+                    f"{float(p['price']):.2f}",
+                    p["stock"],
+                    p["image_path"] or "",
+                ),
+            )
+
+    def add_product(self):
+        name = simpledialog.askstring("Product", "Name:", parent=self)
+        if not name:
+            return
+        try:
+            price = float(
+                simpledialog.askstring("Product", "Price:", parent=self)
+            )
+            stock = int(
+                simpledialog.askstring("Product", "Stock quantity:", parent=self)
+            )
+        except (TypeError, ValueError):
+            messagebox.showerror("Error", "Invalid price or stock.")
+            return
+        image_path = simpledialog.askstring(
+            "Product", "Image file name in assets/ (optional, e.g. phone.png):", parent=self
+        )
+        self.controller.db.add_product(name, price, stock, image_path)
+        self.refresh()
+
+    def delete_product(self):
+        sel = self.tree.focus()
+        if not sel:
+            messagebox.showerror("Error", "Please select a product to delete.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            "Are you sure you want to delete this product?"
+        )
+        if not confirm:
+            return
+
+        try:
+            self.controller.db.delete_product(int(sel))
+            messagebox.showinfo("Deleted", "Product removed successfully.")
+            self.refresh()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete product:\n{e}")
+
+
+class CustomerManagementFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+
+        header = ttk.Frame(self)
+        header.pack(fill="x", pady=5)
+        ttk.Label(header, text="Customer Management", style="SubHeader.TLabel").pack(
+            side="left", padx=10
+        )
+        ttk.Button(
+            header,
+            text="Back to Dashboard",
+            command=lambda: controller.show_frame("DashboardFrame"),
+        ).pack(side="right", padx=10)
+
+        ttk.Button(self, text="Add Customer",
+                   command=self.add_customer).pack(pady=5)
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("name", "phone", "email", "type", "points"),
+            show="headings",
+        )
+        for col, txt in zip(
+            ("name", "phone", "email", "type", "points"),
+            ("Name", "Phone", "Email", "Type", "Points"),
+        ):
+            self.tree.heading(col, text=txt)
+
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def refresh(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for c in self.controller.db.get_customers():
+            self.tree.insert(
+                "",
+                "end",
+                iid=c["id"],
+                values=(
+                    c["name"],
+                    c["phone"],
+                    c["email"],
+                    c["type"],
+                    c["points"],
+                ),
+            )
+
+    def add_customer(self):
+        name = simpledialog.askstring("Customer", "Name:", parent=self)
+        if not name:
+            return
+        phone = simpledialog.askstring("Customer", "Phone:", parent=self)
+        email = simpledialog.askstring("Customer", "Email:", parent=self)
+        type_ = simpledialog.askstring(
+            "Customer", "Type (Standard/VIP/Student):", parent=self
+        ) or "Standard"
+        self.controller.db.add_customer(name, phone, email, type_)
+        self.refresh()
+
+
+class OrderHistoryFrame(ttk.Frame):
+    def __init__(self, parent, controller: POSApp):
+        super().__init__(parent)
+        self.controller = controller
+
+        header = ttk.Frame(self)
+        header.pack(fill="x", pady=5)
+        ttk.Label(header, text="Order History & Sales Report", style="SubHeader.TLabel").pack(
+            side="left", padx=10
+        )
+        ttk.Button(
+            header,
+            text="Back to Dashboard",
+            command=lambda: controller.show_frame("DashboardFrame"),
+        ).pack(side="right", padx=10)
+
+        btn_bar = ttk.Frame(self)
+        btn_bar.pack(fill="x", pady=5)
+        ttk.Button(btn_bar, text="View Invoice Details",
+                   command=self.view_invoice).pack(side="left", padx=5)
+
+        self.tree = ttk.Treeview(
+            self,
+            columns=("datetime", "customer", "served_by", "total"),
+            show="headings",
+        )
+        for col, txt in zip(
+            ("datetime", "customer", "served_by", "total"),
+            ("Date/Time", "Customer", "Served By", "Total ($)"),
+        ):
+            self.tree.heading(col, text=txt)
+
+        self.tree.column("datetime", width=180)
+        self.tree.column("customer", width=150)
+        self.tree.column("served_by", width=100)
+        self.tree.column("total", width=100, anchor="e")
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.summary_label = ttk.Label(self, text="")
+        self.summary_label.pack(pady=(0, 10))
+
+    def refresh(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        orders = self.controller.db.get_orders()
+        total_revenue = 0.0
+        for o in orders:
+            total_revenue += float(o["total"])
+            self.tree.insert(
+                "",
+                "end",
+                iid=o["id"],
+                values=(
+                    o["created_at"],
+                    o["customer_name"],
+                    o["staff_username"],
+                    f"{float(o['total']):.2f}",
+                ),
+            )
+
+        self.summary_label.config(
+            text=f"Total Orders: {len(orders)}    |    Total Revenue: ${total_revenue:.2f}"
+        )
+
+    def view_invoice(self):
+        sel = self.tree.focus()
+        if not sel:
+            messagebox.showerror("Error", "Please select an order first.")
+            return
+        order_id = int(sel)
+        ReceiptWindow(self.controller, order_id)
+
+
+# -------- Receipt window (billing) --------
+class ReceiptWindow(tk.Toplevel):
+    def __init__(self, controller: POSApp, order_id: int):
+        super().__init__(controller)
+        self.controller = controller
+        self.order_id = order_id
+        self.title(f"Nexus Tech - Invoice #{order_id}")
+        self.geometry("600x500")
+
+        self.txt = tk.Text(self, font=("Consolas", 10))
+        self.txt.pack(fill="both", expand=True, padx=10, pady=10)
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill="x", pady=(0, 10))
+        ttk.Button(btn_frame, text="Save / Print Bill",
+                   command=self.save_bill).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="Close",
+                   command=self.destroy).pack(side="right", padx=10)
+
+        self.generate_receipt_text()
+
+    def generate_receipt_text(self):
+        db = self.controller.db
+        order = db.get_order(self.order_id)
+        if not order:
+            self.txt.insert("1.0", "Order not found.")
+            self.txt.config(state="disabled")
+            return
+
+        items = db.get_order_items(self.order_id)
+
+        lines = []
+        lines.append("NEXUS TECH STORE")
+        lines.append("123 Tech Avenue, Auckland")
+        lines.append("Phone: 021-000-0000")
+        lines.append("=" * 50)
+        lines.append(f"Receipt #: {order['id']}")
+        lines.append(f"Date: {order['created_at']}")
+        lines.append(f"Cashier: {order['staff_username']}")
+        lines.append(f"Customer: {order['customer_name']}")
+        lines.append("=" * 50)
+        lines.append(f"{'Item':25} {'Qty':>3} {'Price':>8} {'Total':>10}")
+        lines.append("-" * 50)
+
+        subtotal = 0.0
+        for it in items:
+            name = it["product_name"][:25]
+            qty = it["quantity"]
+            price = float(it["price_at_sale"])
+            total = qty * price
+            subtotal += total
+            lines.append(f"{name:25} {qty:>3} {price:>8.2f} {total:>10.2f}")
+
+        lines.append("-" * 50)
+        lines.append(f"{'Subtotal:':>40} {subtotal:>10.2f}")
+        # Example GST 15%
+        gst = subtotal * 0.15
+        grand_total = subtotal + gst
+        lines.append(f"{'GST (15%):':>40} {gst:>10.2f}")
+        lines.append(f"{'TOTAL:':>40} {grand_total:>10.2f}")
+        lines.append("=" * 50)
+        lines.append("Thank you for shopping at Nexus Tech!")
+
+        receipt_text = "\n".join(lines)
+        self.txt.insert("1.0", receipt_text)
+        self.txt.config(state="disabled")
+
+    def save_bill(self):
+        # let user choose where to save .txt (acts as printable bill)
+        if not os.path.exists(RECEIPTS_DIR):
+            os.makedirs(RECEIPTS_DIR)
+
+        default_path = os.path.join(RECEIPTS_DIR, f"invoice_{self.order_id}.txt")
+        file_path = filedialog.asksaveasfilename(
+            initialfile=os.path.basename(default_path),
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Save / Print Bill"
+        )
+        if not file_path:
+            return
+
+        content = self.txt.get("1.0", "end-1c")
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            messagebox.showinfo(
+                "Saved",
+                f"Bill saved to:\n{file_path}\n\nYou can open and print this file."
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save bill:\n{e}")
+
+
+# ==========================
+# Run app
+# ==========================
+if __name__ == "__main__":
+    # create assets & receipts folders if missing
+    if not os.path.exists(ASSETS_DIR):
+        os.makedirs(ASSETS_DIR)
+    if not os.path.exists(RECEIPTS_DIR):
+        os.makedirs(RECEIPTS_DIR)
+
+    app = POSApp()
+    app.mainloop()
