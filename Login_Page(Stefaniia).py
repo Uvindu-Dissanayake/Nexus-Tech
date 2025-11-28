@@ -20,7 +20,7 @@ LOGO = None   # сюда загрузим картинку после созда
 def load_logo():
     global LOGO
     try:
-        LOGO = tk.PhotoImage(file="nex")
+        LOGO = tk.PhotoImage(file="nexus_logo.png")
     except Exception:
         LOGO = None
 #Page 1:
@@ -282,8 +282,6 @@ def open_change_password_window(role):
         command=change_password
     )
     btn_change.pack(pady=8)
-
-
 # ======================================================
 # Page 2: Login for chosen role
 # ======================================================
@@ -460,8 +458,6 @@ def open_login_window(role):
         command=open_role_window
     )
     btn_back.pack(pady=10)
-
-
 # ======================================================
 # SPLASH SCREEN (ЗАГРУЗКА)
 # ======================================================
@@ -515,8 +511,6 @@ def splash_screen():
 
     # через 1.8 сек закрываем splash и открываем выбор роли
     root.after(1800, lambda: (splash.destroy(), open_role_window()))
-
-
 # ======================================================
 # ROOT WINDOW
 # ======================================================
@@ -525,8 +519,6 @@ root.title("Nexus Techshop Login")
 root.geometry("430x520")
 root.resizable(False, False)
 root.configure(bg=BG_GRADIENT)
-
 load_logo()
 splash_screen()
-
 root.mainloop()
