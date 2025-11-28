@@ -1,0 +1,54 @@
+"""
+CREATE DATABASE IF NOT EXISTS nexus_tech;
+USE nexus_tech;
+
+CREATE TABLE IF NOT EXISTS Staff_Details (
+    staff_id INT PRIMARY KEY AUTO_INCREMENT,
+    staff_name VARCHAR(100) NOT NULL,
+    staff_password VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS Product_Category (
+    category_id INT PRIMARY KEY AUTO_INCREMENT,
+    category_name VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS Customer_Details (
+    customer_id INT PRIMARY KEY AUTO_INCREMENT,
+    customer_name VARCHAR(100) NOT NULL,
+    customer_contact VARCHAR(20),
+    customer_email VARCHAR(100),
+    customer_type ENUM('Basic', 'Premium', 'Student') DEFAULT 'Basic',
+    loyalty_points INT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS Product_Details (
+    product_id INT PRIMARY KEY AUTO_INCREMENT,
+    product_name VARCHAR(200) NOT NULL,
+    category_id INT,
+    product_price DECIMAL(10,2) NOT NULL,
+    product_number INT NOT NULL,
+    FOREIGN KEY (category_id) REFERENCES Product_Category(category_id)
+);
+
+-- Insert sample data
+INSERT INTO Staff_Details (staff_name, staff_password) VALUES 
+('admin', SHA2('admin123', 256)),
+('john', SHA2('staff123', 256));
+
+INSERT INTO Product_Category (category_name) VALUES 
+('Laptops'), ('Smartphones'), ('Accessories'), ('Components');
+
+INSERT INTO Customer_Details (customer_name, customer_contact, customer_email, customer_type, loyalty_points) VALUES
+('Alice Johnson', '123-456-7890', 'alice@email.com', 'Premium', 250),
+('Bob Smith', '234-567-8901', 'bob@email.com', 'Basic', 50),
+('Carol White', '345-678-9012', 'carol@email.com', 'Student', 100);
+
+INSERT INTO Product_Details (product_name, category_id, product_price, product_number) VALUES
+('Dell XPS 15', 1, 1299.99, 15),
+('MacBook Pro', 1, 1999.99, 8),
+('iPhone 15', 2, 999.99, 25),
+('Samsung Galaxy S24', 2, 899.99, 5),
+('Wireless Mouse', 3, 29.99, 50),
+('USB-C Cable', 3, 12.99, 3);
+"""
