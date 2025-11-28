@@ -160,9 +160,7 @@ def open_create_account_window(role):
         if username in USERS[role]:
             lbl_msg.config(text="Username already exists.")
             return
-        if password != confirm:
-            lbl_msg.config(text="Passwords do not match.")
-            return
+        
         if len(password) < 4:
             lbl_msg.config(text="Password must be at least 4 characters.")
             return
