@@ -1,23 +1,34 @@
+
+
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
+from PIL import Image, ImageTk   # << YOU NEED PILLOW INSTALLED
 import sqlite3
 from datetime import datetime
 import os
-import csv
 
-# ------------ Config ------------
-DB_FILE = "shop.db"        # same DB used by Code 2
-TAX_RATE = 0.15            # 15% GST - change if needed
-LOYALTY_PER_DOLLAR = 0.1   # 0.1 point per $1 (=> 1 point per $10)
-# ---------------------------------
+DB_FILE = "shop.db"
+TAX_RATE = 0.15
+LOYALTY_PER_DOLLAR = 0.1
 
-def init_db():
-    """Create missing tables required for POS (keeps existing products table)."""
+
+# -----------------------------------------------------------
+# INITIALISE TABLES
+# -----------------------------------------------------------
+def init_billing_tables():
     conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA foreign_keys = ON;")
     c = conn.cursor()
 
-    # customers table (optional for customer-linked sales)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            name TEXT,
+            price REAL,
+            stock INTEGER
+        )
+    """)
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS customers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,24 +39,22 @@ def init_db():
         )
     """)
 
-    # sales table (header)
     c.execute("""
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             invoice_no TEXT UNIQUE,
             customer_id INTEGER,
-            total REAL,
+            subtotal REAL,
             tax REAL,
             discount REAL,
             grand_total REAL,
             payment_method TEXT,
+            card_type TEXT,
             staff TEXT,
-            timestamp TEXT DEFAULT (datetime('now','localtime')),
-            FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE SET NULL
+            timestamp TEXT DEFAULT (datetime('now','localtime'))
         )
     """)
 
-    # sales_items table (line items)
     c.execute("""
         CREATE TABLE IF NOT EXISTS sales_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,9 +63,7 @@ def init_db():
             name TEXT,
             qty INTEGER,
             price REAL,
-            subtotal REAL,
-            FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-            FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL
+            subtotal REAL
         )
     """)
 
@@ -64,631 +71,393 @@ def init_db():
     conn.close()
 
 
-# ---------- Utility ----------
-def db_query(sql, params=(), fetch=False):
+def db_fetch(sql, params=()):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     cur.execute(sql, params)
-    res = cur.fetchall() if fetch else None
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def db_exec(sql, params=()):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute(sql, params)
     conn.commit()
     conn.close()
-    return res
+
 
 def generate_invoice_no():
-    t = datetime.now().strftime("%Y%m%d%H%M%S")
-    return f"INV{t}"
+    return "INV" + datetime.now().strftime("%Y%m%d%H%M%S")
 
 
-# ---------- Main Application ----------
-class POSApp(tk.Tk):
+# -----------------------------------------------------------
+# BILLING APPLICATION MAIN WINDOW
+# -----------------------------------------------------------
+class BillingApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("POS - Full Billing System")
-        self.geometry("1100x700")
+        self.title("Billing & Receipt - POS System")
+        self.geometry("1100x650")
+        self.resizable(False, False)
 
-        init_db()  # ensure tables exist
+        init_billing_tables()
 
-        self.cart = []  # list of dicts: {product_id, name, price, qty, subtotal}
-        self.selected_customer = None  # (id, name) or None
-        self.staff_name = "cashier"    # change or prompt for staff login in future
+        self.cart = []
+        self.selected_customer = None
+        self.staff = "Cashier"
 
-        # Layout: left = product area, right = cart / checkout
-        main = ttk.Frame(self)
-        main.pack(fill="both", expand=True, padx=8, pady=8)
-
-        left = ttk.Frame(main)
+        left = ttk.Frame(self)
         left.pack(side="left", fill="both", expand=True)
 
-        right = ttk.Frame(main, width=380)
+        right = ttk.Frame(self, width=350)
         right.pack(side="right", fill="y")
 
-        # Product search & list
-        self.product_search_frame = ProductSearchFrame(left, self)
-        self.product_search_frame.pack(fill="both", expand=True, padx=4, pady=4)
-
-        # Cart & Checkout
-        self.cart_frame = CartCheckoutFrame(right, self)
-        self.cart_frame.pack(fill="y", expand=False, padx=4, pady=4)
-
-        # Bottom: quick actions
-        bottom = ttk.Frame(self)
-        bottom.pack(fill="x", padx=8, pady=4)
-        ttk.Button(bottom, text="Export Sales CSV", command=self.export_sales_csv).pack(side="left", padx=4)
-        ttk.Button(bottom, text="Open Product Manager", command=self.open_product_manager).pack(side="left", padx=4)
-        ttk.Button(bottom, text="Quit", command=self.destroy).pack(side="right", padx=4)
-
-    def add_to_cart(self, product_id, name, price, qty):
-        # Merge if already present
-        for item in self.cart:
-            if item['product_id'] == product_id:
-                item['qty'] += qty
-                item['subtotal'] = item['qty'] * item['price']
-                self.cart_frame.refresh_cart()
-                return
-        item = {'product_id': product_id, 'name': name, 'price': price, 'qty': qty, 'subtotal': price * qty}
-        self.cart.append(item)
-        self.cart_frame.refresh_cart()
-
-    def remove_from_cart(self, product_id):
-        self.cart = [i for i in self.cart if i['product_id'] != product_id]
-        self.cart_frame.refresh_cart()
-
-    def clear_cart(self):
-        self.cart.clear()
-        self.selected_customer = None
-        self.cart_frame.refresh_cart()
-
-    def compute_totals(self, discount_percent=0.0, discount_amount=0.0):
-        subtotal = sum(i['subtotal'] for i in self.cart)
-        tax = subtotal * TAX_RATE
-        discount_from_percent = subtotal * (discount_percent / 100.0)
-        discount = discount_from_percent + discount_amount
-        grand_total = max(0.0, subtotal + tax - discount)
-        return {
-            'subtotal': subtotal,
-            'tax': tax,
-            'discount': discount,
-            'grand_total': grand_total
-        }
-
-    def checkout(self, payment_method, discount_percent=0.0, discount_amount=0.0):
-        if not self.cart:
-            messagebox.showwarning("Empty Cart", "Cart is empty.")
-            return False
-
-        totals = self.compute_totals(discount_percent, discount_amount)
-        invoice_no = generate_invoice_no()
-        cust_id = self.selected_customer[0] if self.selected_customer else None
-        staff = self.staff_name
-
-        # Begin transaction
-        conn = sqlite3.connect(DB_FILE)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        cur = conn.cursor()
-        try:
-            # insert sale header
-            cur.execute("""
-                INSERT INTO sales (invoice_no, customer_id, total, tax, discount, grand_total, payment_method, staff)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (invoice_no, cust_id, totals['subtotal'], totals['tax'], totals['discount'], totals['grand_total'], payment_method, staff))
-            sale_id = cur.lastrowid
-
-            # insert sale items and update product stock
-            for item in self.cart:
-                cur.execute("""
-                    INSERT INTO sales_items (sale_id, product_id, name, qty, price, subtotal)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (sale_id, item['product_id'], item['name'], item['qty'], item['price'], item['subtotal']))
-
-                # decrement stock
-                cur.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (item['qty'], item['product_id']))
-
-            # update customer loyalty if applicable
-            if cust_id:
-                loyalty_points_earned = int(totals['grand_total'] * LOYALTY_PER_DOLLAR)
-                cur.execute("UPDATE customers SET loyalty_points = COALESCE(loyalty_points,0) + ? WHERE id = ?", (loyalty_points_earned, cust_id))
-                earned = loyalty_points_earned
-            else:
-                earned = 0
-
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            messagebox.showerror("Checkout Error", f"Failed to complete sale: {e}")
-            conn.close()
-            return False
-
-        conn.close()
-
-        # Show receipt and clear cart
-        self.show_receipt(invoice_no, sale_id, totals, payment_method, staff, earned)
-        self.clear_cart()
-        return True
-
-    def show_receipt(self, invoice_no, sale_id, totals, payment_method, staff, loyalty_earned):
-        # Fetch sale items to display exact saved data
-        rows = db_query("SELECT name, qty, price, subtotal FROM sales_items WHERE sale_id=?",(sale_id,), fetch=True) or []
-        receipt_win = tk.Toplevel(self)
-        receipt_win.title(f"Receipt - {invoice_no}")
-        receipt_text = tk.Text(receipt_win, width=60, height=30, wrap="none")
-        receipt_text.pack(side="left", fill="both", expand=True, padx=6, pady=6)
-        scrollbar = ttk.Scrollbar(receipt_win, orient="vertical", command=receipt_text.yview)
-        scrollbar.pack(side="right", fill="y")
-        receipt_text.config(yscrollcommand=scrollbar.set)
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = []
-        lines.append("=== NEXUS TECH SHOP ===")
-        lines.append(f"Invoice: {invoice_no}")
-        lines.append(f"Date: {now}")
-        if self.selected_customer:
-            lines.append(f"Customer: {self.selected_customer[1]} (ID:{self.selected_customer[0]})")
-        lines.append(f"Staff: {staff}")
-        lines.append("-"*40)
-        lines.append(f"{'Item':25} {'Qty':>3} {'Price':>8} {'Sub':>8}")
-        lines.append("-"*40)
-        for r in rows:
-            name, qty, price, sub = r
-            lines.append(f"{name[:25]:25} {qty:>3} {price:>8.2f} {sub:>8.2f}")
-        lines.append("-"*40)
-        lines.append(f"Subtotal: ${totals['subtotal']:.2f}")
-        lines.append(f"Tax ({TAX_RATE*100:.0f}%): ${totals['tax']:.2f}")
-        lines.append(f"Discount: -${totals['discount']:.2f}")
-        lines.append(f"Grand Total: ${totals['grand_total']:.2f}")
-        lines.append(f"Payment: {payment_method}")
-        lines.append("-"*40)
-        if loyalty_earned:
-            lines.append(f"Loyalty points earned: {loyalty_earned}")
-        lines.append("Thank you for shopping with us!")
-        lines.append("=== Powered by POSApp ===")
-
-        receipt_text.insert("1.0", "\n".join(lines))
-        receipt_text.config(state="disabled")
-
-        # Save receipt buttons
-        btn_frame = ttk.Frame(receipt_win)
-        btn_frame.pack(fill="x", padx=6, pady=6)
-        ttk.Button(btn_frame, text="Save Receipt (.txt)", command=lambda: self.save_receipt_text(invoice_no, "\n".join(lines))).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Close", command=receipt_win.destroy).pack(side="right", padx=4)
-
-    def save_receipt_text(self, invoice_no, content):
-        fn = filedialog.asksaveasfilename(defaultextension=".txt", initialfile=f"{invoice_no}.txt")
-        if not fn:
-            return
-        with open(fn, "w", encoding="utf-8") as f:
-            f.write(content)
-        messagebox.showinfo("Saved", f"Receipt saved to {fn}")
-
-    def export_sales_csv(self):
-        rows = db_query("""
-            SELECT s.invoice_no, s.timestamp, s.grand_total, s.payment_method, c.name as customer
-            FROM sales s
-            LEFT JOIN customers c ON c.id = s.customer_id
-            ORDER BY s.timestamp DESC
-        """, fetch=True) or []
-        if not rows:
-            messagebox.showinfo("No Data", "No sales to export.")
-            return
-        fn = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="sales_export.csv")
-        if not fn:
-            return
-        with open(fn, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["Invoice", "Timestamp", "Grand Total", "Payment Method", "Customer"])
-            for r in rows:
-                w.writerow([r['invoice_no'], r['timestamp'], f"{r['grand_total']:.2f}", r['payment_method'], r['customer'] or ""])
-        messagebox.showinfo("Exported", f"Sales exported to {fn}")
-
-    def open_product_manager(self):
-        # Launch external product manager if exists, or open a simple manager dialog
-        # We'll open a lightweight window to add products quickly (non-full manager)
-        pm = ProductQuickManager(self)
-        pm.grab_set()
+        ProductSelection(left, self).pack(fill="both", expand=True)
+        CartFrame(right, self).pack(fill="y")
 
 
-# ---------- Product Search Frame ----------
-class ProductSearchFrame(ttk.Frame):
-    def __init__(self, parent, app: POSApp):
+# -----------------------------------------------------------
+# PRODUCT SELECTION PANEL
+# -----------------------------------------------------------
+class ProductSelection(ttk.Frame):
+    def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
 
         top = ttk.Frame(self)
-        top.pack(fill="x", padx=4, pady=4)
-        ttk.Label(top, text="Search Product:").pack(side="left", padx=4)
-        self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(top, textvariable=self.search_var, width=40)
-        self.search_entry.pack(side="left", padx=4)
-        ttk.Button(top, text="Search", command=self.search).pack(side="left", padx=4)
-        ttk.Button(top, text="Show All", command=self.load_all).pack(side="left", padx=4)
+        top.pack(fill="x", pady=5)
 
-        # Product list and category filter
-        middle = ttk.Frame(self)
-        middle.pack(fill="both", expand=True, padx=4, pady=4)
+        ttk.Label(top, text="Search Product:").pack(side="left")
+        self.q = tk.StringVar()
+        ttk.Entry(top, textvariable=self.q, width=40).pack(side="left", padx=5)
+        ttk.Button(top, text="Search", command=self.search).pack(side="left")
+        ttk.Button(top, text="Show All", command=self.load_all).pack(side="left", padx=5)
 
-        left_list = ttk.Frame(middle)
-        left_list.pack(side="left", fill="y")
-
-        ttk.Label(left_list, text="Categories").pack(anchor="w")
-        self.cat_listbox = tk.Listbox(left_list, height=15)
-        self.cat_listbox.pack(fill="y", expand=False)
-        self.cat_listbox.bind("<<ListboxSelect>>", self.on_cat_select)
-
-        # populate categories from products table distinct values
-        cats = db_query("SELECT DISTINCT category FROM products ORDER BY category", fetch=True) or []
-        categories = [r[0] for r in cats if r[0]]
-        categories.insert(0, "All")
-        for c in categories:
-            self.cat_listbox.insert("end", c)
-        self.cat_listbox.selection_set(0)
-
-        # products tree
-        self.tree = ttk.Treeview(middle, columns=("id","name","price","stock"), show="headings")
-        for col, w in (("id",60),("name",300),("price",100),("stock",80)):
+        cols = ("id","name","category","price","stock")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=22)
+        for col in cols:
             self.tree.heading(col, text=col.title())
-            self.tree.column(col, width=w, anchor="center")
-        self.tree.pack(side="left", fill="both", expand=True, padx=6)
+        self.tree.pack(fill="both", expand=True, pady=10)
 
-        # right side: add to cart controls
-        right_controls = ttk.Frame(middle)
-        right_controls.pack(side="right", fill="y", padx=6)
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x")
 
-        ttk.Label(right_controls, text="Quantity").pack(pady=(4,0))
-        self.qty_var = tk.IntVar(value=1)
-        self.qty_spin = ttk.Spinbox(right_controls, from_=1, to=999, textvariable=self.qty_var, width=8)
-        self.qty_spin.pack(pady=4)
+        ttk.Label(bottom, text="Qty: ").pack(side="left")
+        self.qty = tk.IntVar(value=1)
+        ttk.Entry(bottom, textvariable=self.qty, width=5).pack(side="left", padx=5)
 
-        ttk.Button(right_controls, text="Add to Cart", command=self.add_selected_to_cart).pack(pady=6)
-        ttk.Button(right_controls, text="Quick Scan (ID)", command=self.quick_scan).pack(pady=6)
-        ttk.Button(right_controls, text="Refresh Products", command=self.load_all).pack(pady=6)
+        ttk.Button(bottom, text="Add", command=self.add_selected).pack(side="left")
+        ttk.Button(bottom, text="Quick ID", command=self.quick_add).pack(side="left")
 
         self.load_all()
 
     def load_all(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
-        rows = db_query("SELECT id, name, price, stock FROM products ORDER BY id", fetch=True) or []
+        rows = db_fetch("SELECT * FROM products ORDER BY id")
         for r in rows:
-            pid, name, price, stock = r['id'], r['name'], r['price'], r['stock']
-            self.tree.insert("", "end", values=(pid, name, f"{price:.2f}", stock))
+            self.tree.insert("", "end", values=(r["id"], r["name"], r["category"], r["price"], r["stock"]))
 
     def search(self):
-        term = self.search_var.get().strip()
-        if not term:
-            self.load_all()
-            return
-        q = "SELECT id, name, price, stock FROM products WHERE name LIKE ? OR category LIKE ? ORDER BY id"
-        rows = db_query(q, (f"%{term}%", f"%{term}%"), fetch=True) or []
+        term = self.q.get()
         for i in self.tree.get_children():
             self.tree.delete(i)
+
+        if term.isdigit():
+            rows = db_fetch("SELECT * FROM products WHERE id=?", (term,))
+        else:
+            rows = db_fetch("SELECT * FROM products WHERE name LIKE ?", (f"%{term}%",))
+
         for r in rows:
-            self.tree.insert("", "end", values=(r['id'], r['name'], f"{r['price']:.2f}", r['stock']))
+            self.tree.insert("", "end", values=(r["id"], r["name"], r["category"], r["price"], r["stock"]))
 
-    def on_cat_select(self, event=None):
-        sel = self.cat_listbox.curselection()
-        if not sel:
+    def add_selected(self):
+        try:
+            sel = self.tree.item(self.tree.selection()[0])["values"]
+        except:
+            messagebox.showwarning("Select", "Please select a product.")
             return
-        cat = self.cat_listbox.get(sel[0])
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        if cat == "All":
-            self.load_all()
-            return
-        rows = db_query("SELECT id, name, price, stock FROM products WHERE category=? ORDER BY id", (cat,), fetch=True) or []
-        for r in rows:
-            self.tree.insert("", "end", values=(r['id'], r['name'], f"{r['price']:.2f}", r['stock']))
 
-    def add_selected_to_cart(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select a product to add.")
-            return
-        vals = self.tree.item(sel[0])['values']
-        pid = int(vals[0])
-        name = vals[1]
-        price = float(vals[2])
-        stock = int(vals[3]) if vals[3] is not None and vals[3] != "" else None
-        qty = int(self.qty_var.get() or 1)
-        if stock is not None and qty > stock:
-            messagebox.showwarning("Stock", f"Only {stock} available.")
-            return
-        self.app.add_to_cart(pid, name, price, qty)
+        pid, name, cat, price, stock = sel
+        qty = self.qty.get()
 
-    def quick_scan(self):
-        # allow entering product id quickly
-        pid = simpledialog.askinteger("Scan", "Enter Product ID")
+        if qty > stock:
+            messagebox.showerror("Stock Error", f"Only {stock} available.")
+            return
+
+        for item in self.app.cart:
+            if item["id"] == pid:
+                item["qty"] += qty
+                item["subtotal"] = item["qty"] * item["price"]
+                break
+        else:
+            self.app.cart.append({
+                "id": pid,
+                "name": name,
+                "price": price,
+                "qty": qty,
+                "subtotal": qty * price
+            })
+
+        self.master.master.children["!cartframe"].refresh()
+
+    def quick_add(self):
+        pid = simpledialog.askinteger("Product ID", "Enter product ID:")
         if not pid:
             return
-        row = db_query("SELECT id, name, price, stock FROM products WHERE id=?", (pid,), fetch=True)
+
+        row = db_fetch("SELECT * FROM products WHERE id=?", (pid,))
         if not row:
-            messagebox.showerror("Not found", "Product ID not found.")
+            messagebox.showerror("Error", "Product not found.")
             return
-        r = row[0]
-        name, price, stock = r['name'], r['price'], r['stock']
-        qty = simpledialog.askinteger("Quantity", f"Enter quantity for {name}", initialvalue=1, minvalue=1)
-        if not qty:
+
+        product = row[0]
+        qty = simpledialog.askinteger("Quantity", f"Qty for {product['name']}:", initialvalue=1)
+
+        if qty > product["stock"]:
+            messagebox.showerror("Stock", f"Only {product['stock']} available.")
             return
-        if stock is not None and qty > stock:
-            messagebox.showwarning("Stock", f"Only {stock} available.")
-            return
-        self.app.add_to_cart(pid, name, price, qty)
+
+        self.app.cart.append({
+            "id": product["id"],
+            "name": product["name"],
+            "price": product["price"],
+            "qty": qty,
+            "subtotal": qty * product["price"]
+        })
+
+        self.master.master.children["!cartframe"].refresh()
 
 
-# ---------- Cart & Checkout Frame ----------
-class CartCheckoutFrame(ttk.Frame):
-    def __init__(self, parent, app: POSApp):
+# -----------------------------------------------------------
+# CART + CHECKOUT PANEL (PAYMENT LOGOS INCLUDED)
+# -----------------------------------------------------------
+class CartFrame(ttk.Frame):
+    def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
 
-        ttk.Label(self, text="Cart & Checkout", font=("Helvetica", 14, "bold")).pack(pady=6)
+        ttk.Label(self, text="CART", font=("Arial", 14, "bold")).pack(pady=5)
 
-        # Cart tree
-        columns = ("product_id", "name", "qty", "price", "subtotal")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12)
-        for col, w in (("product_id",60),("name",160),("qty",60),("price",80),("subtotal",100)):
+        cols = ("id","name","qty","price","subtotal")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        for col in cols:
             self.tree.heading(col, text=col.title())
-            self.tree.column(col, width=w, anchor="center")
-        self.tree.pack(padx=6, pady=4)
+        self.tree.pack(fill="x", pady=5)
 
-        btns = ttk.Frame(self)
-        btns.pack(fill="x", padx=6)
-        ttk.Button(btns, text="Remove Selected", command=self.remove_selected).pack(side="left", padx=3)
-        ttk.Button(btns, text="Clear Cart", command=self.clear_cart).pack(side="left", padx=3)
-        ttk.Button(btns, text="Edit Qty", command=self.edit_qty).pack(side="left", padx=3)
+        b = ttk.Frame(self)
+        b.pack(pady=5)
+        ttk.Button(b, text="Remove", command=self.remove).pack(side="left", padx=4)
+        ttk.Button(b, text="Clear", command=self.clear).pack(side="left", padx=4)
 
-        # Totals & customer
-        frame2 = ttk.Frame(self)
-        frame2.pack(fill="x", padx=6, pady=6)
+        # DISCOUNT + PAYMENT
+        frame = ttk.LabelFrame(self, text="Payment & Discounts")
+        frame.pack(fill="x", pady=10)
 
-        # Customer selector
-        cust_frame = ttk.Frame(frame2)
-        cust_frame.pack(fill="x", pady=3)
-        ttk.Label(cust_frame, text="Customer:").pack(side="left")
-        self.cust_var = tk.StringVar(value="Guest")
-        self.cust_label = ttk.Label(cust_frame, textvariable=self.cust_var, width=30)
-        self.cust_label.pack(side="left", padx=4)
-        ttk.Button(cust_frame, text="Select/Add", command=self.select_customer).pack(side="left", padx=4)
+        ttk.Label(frame, text="Discount %").grid(row=0, column=0)
+        self.discP = tk.DoubleVar(value=0)
+        ttk.Entry(frame, textvariable=self.discP, width=7).grid(row=0, column=1, padx=5)
 
-        # Discount & payment
-        tot_frame = ttk.Frame(frame2)
-        tot_frame.pack(fill="x", pady=3)
+        ttk.Label(frame, text="Discount $").grid(row=0, column=2)
+        self.discA = tk.DoubleVar(value=0)
+        ttk.Entry(frame, textvariable=self.discA, width=7).grid(row=0, column=3, padx=5)
 
-        ttk.Label(tot_frame, text="Discount (%)").grid(row=0, column=0, sticky="e")
-        self.disc_percent_var = tk.DoubleVar(value=0.0)
-        ttk.Entry(tot_frame, textvariable=self.disc_percent_var, width=8).grid(row=0, column=1, padx=4)
+        # -------------------------------
+        # PAYMENT METHOD DROPDOWN
+        # -------------------------------
+        ttk.Label(frame, text="Payment Method").grid(row=1, column=0, pady=10)
 
-        ttk.Label(tot_frame, text="Discount (Amt)").grid(row=0, column=2, sticky="e")
-        self.disc_amt_var = tk.DoubleVar(value=0.0)
-        ttk.Entry(tot_frame, textvariable=self.disc_amt_var, width=10).grid(row=0, column=3, padx=4)
+        self.pay_method = tk.StringVar(value="Cash")
+        self.payment_box = ttk.Combobox(
+            frame,
+            textvariable=self.pay_method,
+            values=["Cash", "Card", "PayWave", "Online Bank Transfer"],
+            width=18
+        )
+        self.payment_box.grid(row=1, column=1)
 
-        ttk.Label(tot_frame, text="Payment Method").grid(row=1, column=0, sticky="e", pady=6)
-        self.pay_method_var = tk.StringVar(value="Cash")
-        ttk.Combobox(tot_frame, textvariable=self.pay_method_var, values=["Cash","Card","Other"], width=12).grid(row=1, column=1, padx=4)
+        self.payment_box.bind("<<ComboboxSelected>>", self.update_payment_ui)
 
-        # Totals display
-        display = ttk.Frame(self)
-        display.pack(fill="x", padx=6, pady=6)
-        self.sub_label = ttk.Label(display, text="Subtotal: $0.00")
-        self.sub_label.pack(anchor="w")
-        self.tax_label = ttk.Label(display, text=f"Tax ({TAX_RATE*100:.0f}%): $0.00")
-        self.tax_label.pack(anchor="w")
-        self.disc_label = ttk.Label(display, text="Discount: $0.00")
-        self.disc_label.pack(anchor="w")
-        self.total_label = ttk.Label(display, text="Grand Total: $0.00", font=("Helvetica", 12, "bold"))
-        self.total_label.pack(anchor="w", pady=4)
+        # CARD TYPE DROPDOWN (Hidden unless "Card")
+        ttk.Label(frame, text="Card Type").grid(row=1, column=2)
+        self.card_type = tk.StringVar(value="Visa")
 
-        # Checkout
-        chk_frame = ttk.Frame(self)
-        chk_frame.pack(fill="x", padx=6, pady=6)
-        ttk.Button(chk_frame, text="Recalculate", command=self.refresh_cart).pack(side="left")
-        ttk.Button(chk_frame, text="Checkout", command=self.on_checkout).pack(side="right")
+        self.card_box = ttk.Combobox(
+            frame,
+            textvariable=self.card_type,
+            values=["Visa", "Debit", "Credit"],
+            state="disabled",
+            width=12
+        )
+        self.card_box.grid(row=1, column=3)
 
-        # initial refresh
-        self.refresh_cart()
+        # ---------------------------------------------------------
+        # ==== PUT YOUR PAYMENT LOGOS IN THIS SECTION ====
+        #
+        # REQUIRED FILES (PNG) → must be in same directory:
+        #   cash.png
+        #   visa.png
+        #   debit.png
+        #   credit.png
+        #   paywave.png
+        #   bank.png
+        # ---------------------------------------------------------
 
-    def refresh_cart(self):
-        # refresh tree
+        def load_icon(name):
+            try:
+                img = Image.open(name).resize((60, 40))
+                return ImageTk.PhotoImage(img)
+            except:
+                return None
+
+        self.icons = {
+            "Cash": load_icon("cash.png"),
+            "Visa": load_icon("visa.png"),
+            "Debit": load_icon("debit.png"),
+            "Credit": load_icon("credit.png"),
+            "PayWave": load_icon("paywave.png"),
+            "Online Bank Transfer": load_icon("bank.png")
+        }
+
+        # Label to show payment icon
+        self.icon_label = ttk.Label(frame)
+        self.icon_label.grid(row=2, column=0, columnspan=4, pady=10)
+
+        # -------------------------------
+        # TOTALS
+        # -------------------------------
+        self.subT = ttk.Label(self, text="Subtotal: $0.00")
+        self.subT.pack(anchor="w", padx=10)
+
+        self.taxT = ttk.Label(self, text=f"Tax ({TAX_RATE*100:.0f}%): $0.00")
+        self.taxT.pack(anchor="w", padx=10)
+
+        self.disT = ttk.Label(self, text="Discount: $0.00")
+        self.disT.pack(anchor="w", padx=10)
+
+        self.grandT = ttk.Label(self, text="Grand Total: $0.00", font=("Arial", 11, "bold"))
+        self.grandT.pack(anchor="w", padx=10, pady=5)
+
+        ttk.Button(self, text="Checkout", command=self.checkout).pack(pady=10)
+
+        self.refresh()
+
+
+    # -------------------------------
+    # PAYMENT UI UPDATE
+    # -------------------------------
+    def update_payment_ui(self, event=None):
+        method = self.pay_method.get()
+
+        # Show card dropdown only for "Card"
+        if method == "Card":
+            self.card_box.config(state="normal")
+            icon = self.icons.get("Visa")
+        else:
+            self.card_box.config(state="disabled")
+            icon = self.icons.get(method)
+
+        # Display logo
+        if icon:
+            self.icon_label.config(image=icon)
+            self.icon_label.image = icon
+        else:
+            self.icon_label.config(image="", text="No Icon Found")
+
+
+    # -------------------------------
+    # CART FUNCTIONS
+    # -------------------------------
+    def refresh(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
+
+        subtotal = 0
         for item in self.app.cart:
-            self.tree.insert("", "end", values=(item['product_id'], item['name'], item['qty'], f"{item['price']:.2f}", f"{item['subtotal']:.2f}"))
-        # update customer label
-        if self.app.selected_customer:
-            self.cust_var.set(f"{self.app.selected_customer[1]} (ID:{self.app.selected_customer[0]})")
-        else:
-            self.cust_var.set("Guest")
+            self.tree.insert("", "end", values=(item["id"], item["name"], item["qty"], item["price"], item["subtotal"]))
+            subtotal += item["subtotal"]
 
-        # update totals
-        totals = self.app.compute_totals(self.disc_percent_var.get() or 0.0, self.disc_amt_var.get() or 0.0)
-        self.sub_label.config(text=f"Subtotal: ${totals['subtotal']:.2f}")
-        self.tax_label.config(text=f"Tax ({TAX_RATE*100:.0f}%): ${totals['tax']:.2f}")
-        self.disc_label.config(text=f"Discount: ${totals['discount']:.2f}")
-        self.total_label.config(text=f"Grand Total: ${totals['grand_total']:.2f}")
+        tax = subtotal * TAX_RATE
+        disc = subtotal * (self.discP.get()/100) + self.discA.get()
+        grand = subtotal + tax - disc
 
-    def remove_selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select an item to remove.")
+        self.subT.config(text=f"Subtotal: ${subtotal:.2f}")
+        self.taxT.config(text=f"Tax ({TAX_RATE*100:.0f}%): ${tax:.2f}")
+        self.disT.config(text=f"Discount: ${disc:.2f}")
+        self.grandT.config(text=f"Grand Total: ${grand:.2f}")
+
+    def remove(self):
+        try:
+            pid = self.tree.item(self.tree.selection()[0])["values"][0]
+        except:
             return
-        pid = int(self.tree.item(sel[0])['values'][0])
-        self.app.remove_from_cart(pid)
-        self.refresh_cart()
 
-    def clear_cart(self):
-        if not messagebox.askyesno("Confirm", "Clear cart?"):
-            return
-        self.app.clear_cart()
-        self.refresh_cart()
+        self.app.cart = [i for i in self.app.cart if i["id"] != pid]
+        self.refresh()
 
-    def edit_qty(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select an item to edit.")
-            return
-        pid = int(self.tree.item(sel[0])['values'][0])
-        current = next((i for i in self.app.cart if i['product_id']==pid), None)
-        if not current:
-            return
-        new_qty = simpledialog.askinteger("Quantity", "Enter new quantity", initialvalue=current['qty'], minvalue=1)
-        if not new_qty:
-            return
-        # check stock
-        row = db_query("SELECT stock FROM products WHERE id=?", (pid,), fetch=True)
-        stock = row[0]['stock'] if row else None
-        if stock is not None and new_qty > stock:
-            messagebox.showwarning("Stock", f"Only {stock} available.")
-            return
-        current['qty'] = new_qty
-        current['subtotal'] = current['price'] * new_qty
-        self.refresh_cart()
+    def clear(self):
+        self.app.cart.clear()
+        self.refresh()
 
-    def select_customer(self):
-        dialog = CustomerSelector(self)
-        self.wait_window(dialog)
-        if dialog.selected_customer:
-            self.app.selected_customer = dialog.selected_customer
-        self.refresh_cart()
 
-    def on_checkout(self):
-        # get payment method and discounts and confirm
-        discount_percent = float(self.disc_percent_var.get() or 0.0)
-        discount_amount = float(self.disc_amt_var.get() or 0.0)
-        payment_method = self.pay_method_var.get() or "Cash"
+    # -------------------------------
+    # CHECKOUT
+    # -------------------------------
+    def checkout(self):
+        if not self.app.cart:
+            messagebox.showerror("Empty", "Nothing in cart.")
+            return
 
-        totals = self.app.compute_totals(discount_percent, discount_amount)
-        confirm = messagebox.askyesno("Confirm Payment", f"Charge ${totals['grand_total']:.2f} via {payment_method}?")
+        subtotal = sum(i["subtotal"] for i in self.app.cart)
+        tax = subtotal * TAX_RATE
+        disc = subtotal * (self.discP.get()/100) + self.discA.get()
+        grand = subtotal + tax - disc
+
+        pay_method = self.pay_method.get()
+        card_type = self.card_type.get() if pay_method == "Card" else None
+
+        confirm = messagebox.askyesno("Confirm", f"Pay ${grand:.2f} using {pay_method}?")
         if not confirm:
             return
 
-        ok = self.app.checkout(payment_method, discount_percent, discount_amount)
-        if ok:
-            messagebox.showinfo("Done", "Sale completed.")
-
-
-# ---------- Customer Selector ----------
-class CustomerSelector(tk.Toplevel):
-    def __init__(self, parent: CartCheckoutFrame):
-        super().__init__(parent)
-        self.title("Select / Add Customer")
-        self.geometry("500x400")
-        self.selected_customer = None
-
-        top = ttk.Frame(self)
-        top.pack(fill="x", padx=8, pady=6)
-        ttk.Label(top, text="Search by name or phone:").pack(side="left")
-        self.svar = tk.StringVar()
-        ttk.Entry(top, textvariable=self.svar, width=30).pack(side="left", padx=6)
-        ttk.Button(top, text="Search", command=self.search).pack(side="left", padx=4)
-        ttk.Button(top, text="Show All", command=self.load_all).pack(side="left", padx=4)
-
-        self.tree = ttk.Treeview(self, columns=("id","name","phone","email","points"), show="headings", height=12)
-        for col,w in (("id",50),("name",150),("phone",100),("email",150),("points",60)):
-            self.tree.heading(col, text=col.title())
-            self.tree.column(col, width=w, anchor="center")
-        self.tree.pack(fill="both", expand=True, padx=8, pady=8)
-        btns = ttk.Frame(self)
-        btns.pack(fill="x", padx=8, pady=6)
-        ttk.Button(btns, text="Select", command=self.select).pack(side="left", padx=4)
-        ttk.Button(btns, text="Add New", command=self.add_new).pack(side="left", padx=4)
-        ttk.Button(btns, text="Close", command=self.destroy).pack(side="right", padx=4)
-
-        self.load_all()
-
-    def load_all(self):
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        rows = db_query("SELECT id,name,phone,email,loyalty_points FROM customers ORDER BY id DESC", fetch=True) or []
-        for r in rows:
-            self.tree.insert("", "end", values=(r['id'], r['name'], r['phone'] or "", r['email'] or "", r['loyalty_points'] or 0))
-
-    def search(self):
-        t = self.svar.get().strip()
-        if not t:
-            self.load_all()
-            return
-        rows = db_query("SELECT id,name,phone,email,loyalty_points FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY id DESC", (f"%{t}%", f"%{t}%"), fetch=True) or []
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        for r in rows:
-            self.tree.insert("", "end", values=(r['id'], r['name'], r['phone'] or "", r['email'] or "", r['loyalty_points'] or 0))
-
-    def select(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select a customer.")
-            return
-        vals = self.tree.item(sel[0])['values']
-        self.selected_customer = (vals[0], vals[1])
-        self.destroy()
-
-    def add_new(self):
-        name = simpledialog.askstring("Name", "Customer name:")
-        if not name:
-            return
-        phone = simpledialog.askstring("Phone", "Phone (optional):")
-        email = simpledialog.askstring("Email", "Email (optional):")
         conn = sqlite3.connect(DB_FILE)
         cur = conn.cursor()
-        cur.execute("INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)", (name, phone, email))
+
+        invoice = generate_invoice_no()
+        cur.execute("""
+            INSERT INTO sales (invoice_no, subtotal, tax, discount, grand_total, payment_method, card_type, staff)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (invoice, subtotal, tax, disc, grand, pay_method, card_type, self.app.staff))
+
+        sale_id = cur.lastrowid
+
+        # Insert items
+        for it in self.app.cart:
+            cur.execute("""
+                INSERT INTO sales_items (sale_id, product_id, name, qty, price, subtotal)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (sale_id, it["id"], it["name"], it["qty"], it["price"], it["subtotal"]))
+
+            # reduce stock
+            cur.execute("UPDATE products SET stock = stock - ? WHERE id=?", (it["qty"], it["id"]))
+
         conn.commit()
         conn.close()
-        messagebox.showinfo("Added", "Customer added.")
-        self.load_all()
+
+        messagebox.showinfo("Success", f"Payment Successful!\nInvoice: {invoice}")
+
+        self.app.cart.clear()
+        self.refresh()
 
 
-# ---------- Quick Product Manager (light weight) ----------
-class ProductQuickManager(tk.Toplevel):
-    def __init__(self, app: POSApp):
-        super().__init__(app)
-        self.title("Quick Product Manager")
-        self.geometry("600x400")
-        self.app = app
-
-        top = ttk.Frame(self)
-        top.pack(fill="x", padx=6, pady=6)
-        ttk.Label(top, text="Add New Product").pack(anchor="w")
-        form = ttk.Frame(self)
-        form.pack(fill="x", padx=6)
-
-        ttk.Label(form, text="Category").grid(row=0, column=0, sticky="e")
-        self.cat_e = ttk.Entry(form, width=30); self.cat_e.grid(row=0, column=1, padx=4, pady=3)
-        ttk.Label(form, text="Name").grid(row=1, column=0, sticky="e")
-        self.name_e = ttk.Entry(form, width=40); self.name_e.grid(row=1, column=1, padx=4, pady=3)
-        ttk.Label(form, text="Price").grid(row=2, column=0, sticky="e")
-        self.price_e = ttk.Entry(form, width=20); self.price_e.grid(row=2, column=1, padx=4, pady=3)
-        ttk.Label(form, text="Stock").grid(row=3, column=0, sticky="e")
-        self.stock_e = ttk.Entry(form, width=20); self.stock_e.grid(row=3, column=1, padx=4, pady=3)
-
-        ttk.Button(self, text="Add Product", command=self.add_product).pack(pady=6)
-        ttk.Button(self, text="Close", command=self.destroy).pack(pady=6)
-
-    def add_product(self):
-        cat = self.cat_e.get().strip()
-        name = self.name_e.get().strip()
-        try:
-            price = float(self.price_e.get().strip())
-        except:
-            messagebox.showerror("Error", "Invalid price.")
-            return
-        try:
-            stock = int(self.stock_e.get().strip())
-        except:
-            messagebox.showerror("Error", "Invalid stock.")
-            return
-        conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
-        cur.execute("INSERT INTO products (category, name, price, stock) VALUES (?, ?, ?, ?)", (cat, name, price, stock))
-        conn.commit()
-        conn.close()
-        messagebox.showinfo("Added", "Product added.")
-        # refresh product lists in main window (simple reload)
-        self.app.product_search_frame.load_all()
-        self.destroy()
-
-
-# ---------- Run ----------
+# -----------------------------------------------------------
+# RUN APP
+# -----------------------------------------------------------
 if __name__ == "__main__":
-    # ensure DB exists and any existing products table from Code2 is kept
-    init_db()
-    app = POSApp()
+    if not os.path.exists(DB_FILE):
+        init_billing_tables()
+    app = BillingApp()
     app.mainloop()
