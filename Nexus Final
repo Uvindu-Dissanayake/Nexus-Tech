@@ -142,6 +142,14 @@ class Database:
         )
         self.conn.commit()
 
+    def update_product(self, pid, name, price, stock, image_path):
+        cur = self.cursor()
+        cur.execute(
+            "UPDATE products SET name=%s, price=%s, stock=%s, image_path=%s WHERE id=%s",
+            (name, price, stock, image_path, pid))
+        self.conn.commit()
+
+
     def delete_product(self, product_id):
         cur = self.cursor()
         cur.execute("DELETE FROM products WHERE id=%s", (product_id,))
@@ -165,6 +173,18 @@ class Database:
             "INSERT INTO customers (name, phone, email, type) VALUES (%s,%s,%s,%s)",
             (name, phone, email, type_)
         )
+        self.conn.commit()
+
+    def update_customer(self, cid, name, phone, email, type_):
+        cur = self.cursor()
+        cur.execute(
+            "UPDATE customers SET name=%s, phone=%s, email=%s, type=%s WHERE id=%s",
+            (name, phone, email, type_, cid))
+        self.conn.commit()
+
+    def delete_customer(self, cid):
+        cur = self.cursor()
+        cur.execute("DELETE FROM customers WHERE id=%s", (cid,))
         self.conn.commit()
 
     def get_customer_by_id(self, customer_id):
@@ -314,6 +334,12 @@ class POSApp(tk.Tk):
 
     def clear_cart(self):
         self.cart = []
+
+    def low_stock_alert(self):
+        low_items = [p for p in self.db.get_products() if p["stock"] < 5]
+        if low_items:
+            msg = "\n".join([f"{p['name']} - {p['stock']} left" for p in low_items])
+            messagebox.showwarning("Low Stock Alert", f"These products need restocking:\n\n{msg}")
 
 
 # ==========================
@@ -823,6 +849,8 @@ class ProductManagementFrame(ttk.Frame):
         btn_bar.pack(fill="x", pady=5)
         ttk.Button(btn_bar, text="Add Product",
                    command=self.add_product).pack(side="left", padx=5)
+        ttk.Button(btn_bar, text="Update Product",
+                   command=self.update_product).pack(side="left", padx=5)
         ttk.Button(btn_bar, text="Delete Selected",
                    command=self.delete_product).pack(side="left", padx=5)
 
@@ -878,6 +906,23 @@ class ProductManagementFrame(ttk.Frame):
         self.controller.db.add_product(name, price, stock, image_path)
         self.refresh()
 
+    def update_product(self):
+        sel = self.tree.focus()
+        if not sel:
+            messagebox.showwarning("Select", "Choose a product first.")
+            return
+
+        name, price, stock, img = self.tree.item(sel)["values"]
+
+        name = simpledialog.askstring("Edit Name", "", initialvalue=name)
+        price = simpledialog.askfloat("Edit Price", "", initialvalue=float(price))
+        stock = simpledialog.askinteger("Edit Stock", "", initialvalue=int(stock))
+        img = simpledialog.askstring("Edit Image", "", initialvalue=img)
+
+        # FIXED: Changed self.app.db to self.controller.db
+        self.controller.db.update_product(int(sel), name, price, stock, img)
+        self.refresh()
+
     def delete_product(self):
         sel = self.tree.focus()
         if not sel:
@@ -917,6 +962,10 @@ class CustomerManagementFrame(ttk.Frame):
 
         ttk.Button(self, text="Add Customer",
                    command=self.add_customer).pack(pady=5)
+        ttk.Button(self, text="Update Customer",
+                   command=self.update_customer).pack(pady=5)
+        ttk.Button(self, text="Delete Customer",
+                   command=self.delete_customer).pack(pady=5)
 
         self.tree = ttk.Treeview(
             self,
@@ -959,6 +1008,31 @@ class CustomerManagementFrame(ttk.Frame):
         ) or "Standard"
         self.controller.db.add_customer(name, phone, email, type_)
         self.refresh()
+
+    def update_customer(self):
+        sel = self.tree.focus()
+        if not sel:
+            return
+
+        row = self.tree.item(sel)["values"]
+
+        name = simpledialog.askstring("Name", "", initialvalue=row[0])
+        phone = simpledialog.askstring("Phone", "", initialvalue=row[1])
+        email = simpledialog.askstring("Email", "", initialvalue=row[2])
+        type_ = simpledialog.askstring("Type", "", initialvalue=row[3])
+
+        # FIXED: Changed self.app.db to self.controller.db
+        self.controller.db.update_customer(int(sel), name, phone, email, type_)
+        self.refresh()
+
+    def delete_customer(self):
+        sel = self.tree.focus()
+        if not sel:
+            return
+        if messagebox.askyesno("Confirm", "Delete this customer?"):
+            # FIXED: Changed self.app.db to self.controller.db
+            self.controller.db.delete_customer(int(sel))
+            self.refresh()
 
 
 class OrderHistoryFrame(ttk.Frame):
