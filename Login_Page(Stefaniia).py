@@ -30,10 +30,7 @@ def load_logo():
         LOGO = None
 
 
-# ======================================================
-# СТРАНИЦА 1: ВЫБОР РОЛИ
-# ======================================================
-def open_role_window():
+#Page 1:
     global current_role
     current_role = None
 
