@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 
-# ---------- COLORS / STYLE ----------
+# COLORS / STYLE
 BG_GRADIENT = "#0e0e10"       # фон окна (почти чёрный с фиолетовым)
 CARD_COLOR = "#1a1b26"        # карточки
 TEXT_LIGHT = "#ffffff"        # основной текст
@@ -9,44 +9,33 @@ ACCENT = "#7d5fff"            # основной акцент (фиолетов�
 ACCENT_HOVER = "#9b87ff"      # подсветка кнопок
 GLOW = "#4b39bb"              # цвет рамки вокруг карточек
 
-# ---------- ЛОГИН ДАННЫЕ ----------
+# Login Passwords 
 USERS = {
     "admin": {"admin": "1234"},
     "staff": {"staff": "5678"}
 }
-
 current_role = None
 LOGO = None   # сюда загрузим картинку после создания root
-
-
-# ======================================================
-# ЗАГРУЗКА ЛОГО
-# ======================================================
+# loading Logo
 def load_logo():
     global LOGO
     try:
         LOGO = tk.PhotoImage(file="nexus_logo.png")
     except Exception:
         LOGO = None
-
-
 #Page 1:
     def open_role_window():
     global current_role
     current_role = None
-
     for widget in root.winfo_children():
         widget.destroy()
-
     frame = tk.Frame(root, bg=BG_GRADIENT)
     frame.pack(expand=True, fill="both")
-
-    # ЛОГО
+    # LOGO
     if LOGO is not None:
         logo_label = tk.Label(frame, image=LOGO, bg=BG_GRADIENT)
         logo_label.pack(pady=(25, 5))
-
-    # СЛОГАН
+    # Slogan
     slogan = tk.Label(
         frame,
         text="NEXUS TECHSHOP",
@@ -117,11 +106,7 @@ def load_logo():
         bg=BG_GRADIENT
     )
     footer.pack(side="bottom", pady=10)
-
-
-# ======================================================
-# ОКНО: СОЗДАНИЕ АККАУНТА
-# ======================================================
+# Window to create the account
 def open_create_account_window(role):
     win = tk.Toplevel(root)
     win.title(f"Create {role.capitalize()} Account")
@@ -146,12 +131,10 @@ def open_create_account_window(role):
         fg=TEXT_LIGHT,
         bg=CARD_COLOR
     ).pack(pady=(0, 10))
-
     tk.Label(card, text="New username:", fg=TEXT_LIGHT,
              bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
     entry_user = tk.Entry(card, font=("Arial", 10), width=25)
     entry_user.pack(pady=3)
-
     tk.Label(card, text="New password:", fg=TEXT_LIGHT,
              bg=CARD_COLOR, font=("Arial", 10)).pack(anchor="w")
     entry_pass = tk.Entry(card, font=("Arial", 10), width=25, show="*")
@@ -203,11 +186,8 @@ def open_create_account_window(role):
         command=create_account
     )
     btn_create.pack(pady=8)
+# Window to change the password
 
-
-# ======================================================
-# ОКНО: СМЕНА ПАРОЛЯ
-# ======================================================
 def open_change_password_window(role):
     win = tk.Toplevel(root)
     win.title(f"Change {role.capitalize()} Password")
