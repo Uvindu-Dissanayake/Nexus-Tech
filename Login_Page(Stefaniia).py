@@ -1,5 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
+import json
+import os
 
 # ---------- COLORS / STYLE ----------
 BG_GRADIENT = "#0e0e10"       # фон окна (почти чёрный с фиолетовым)
@@ -9,14 +11,48 @@ ACCENT = "#7d5fff"            # основной акцент (фиолетов�
 ACCENT_HOVER = "#9b87ff"      # подсветка кнопок
 GLOW = "#4b39bb"              # цвет рамки вокруг карточек
 
-# ---------- ЛОГИН ДАННЫЕ ----------
-USERS = {
-    "admin": {"admin": "1234"},
-    "staff": {"staff": "5678"}
-}
+USERS_FILE = "users.json"     # файл, куда сохраняем пользователей
 
 current_role = None
-LOGO = None   # сюда загрузим картинку после создания root
+LOGO = None
+USERS = {}  # сюда загрузим пользователей
+
+
+# ======================================================
+# РАБОТА С ФАЙЛОМ ПОЛЬЗОВАТЕЛЕЙ
+# ======================================================
+def load_users():
+    """
+    Загружаем пользователей из users.json.
+    Если файла нет или он битый — создаём дефолтных.
+    """
+    global USERS
+
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "admin" in data and "staff" in data:
+                USERS = data
+                return
+        except Exception:
+            pass  # если фигня с файлом — игнорим и создаём новых
+
+    # дефолтные пользователи
+    USERS = {
+        "admin": {"admin": "1234"},
+        "staff": {"staff": "5678"}
+    }
+    save_users()
+
+
+def save_users():
+    """Сохраняем словарь USERS в JSON-файл."""
+    try:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(USERS, f, indent=4)
+    except Exception as e:
+        print("Error saving users:", e)
 
 
 # ======================================================
@@ -67,7 +103,7 @@ def open_role_window():
     )
     subtitle.pack(pady=(0, 25))
 
-    # hover для обычных Button
+    # hover для кнопок
     def hover(event, btn):
         btn.config(bg=ACCENT_HOVER)
 
@@ -187,6 +223,7 @@ def open_create_account_window(role):
             return
 
         USERS[role][username] = password
+        save_users()
         messagebox.showinfo("Account created",
                             f"New {role} account '{username}' created successfully.")
         win.destroy()
@@ -302,6 +339,7 @@ def open_change_password_window(role):
             return
 
         USERS[role][username] = new
+        save_users()
         messagebox.showinfo("Password changed",
                             "Password updated successfully.")
         win.destroy()
@@ -571,7 +609,6 @@ def splash_screen():
     )
     loading.pack()
 
-    # через 1.8 сек закрываем splash и открываем выбор роли
     root.after(1800, lambda: (splash.destroy(), open_role_window()))
 
 
@@ -584,6 +621,7 @@ root.geometry("430x520")
 root.resizable(False, False)
 root.configure(bg=BG_GRADIENT)
 
+load_users()
 load_logo()
 splash_screen()
 
